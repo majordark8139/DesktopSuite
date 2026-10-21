@@ -9,23 +9,93 @@
 
 ---
 
-## ✨ Features
+<p align="center">
+  <img src="assets/screenshots/01-hero-anurati-skyline.png" alt="DesktopSuite Hero Banner" width="100%" />
+</p>
 
-- **26 Master Community Themes**: From minimal typography to sci-fi cyberdecks, retrogaming pixel art, and mid-century functionalism:
-  - *Mond Minimal*, *Cyberpunk 2077*, *FLHUD*, *Enigma Classic*, *Pixel Arcade*, *Liquid Glass*, *Circular Orbit*, *Textime*, *Braun Dieter*, *Nordic Glint*, *Matrix CLI*, *Zen Garden*, *Vector Tactical*, and more.
-- **Decoupled Component Architecture**:
-  - Clock, Date, and Visualizer can each be individually toggled, positioned, dragged, and anchored anywhere on screen.
-  - **Independent Component Scaling**: Adjust `Clock Scale`, `Date Scale`, and `Visualizer Scale` separately or link them to a master canvas scale.
-  - **Decoupled Color Customization**: Separate native color pickers for Clock, Date, and Audio Visualizer with live instant canvas redraw.
-- **Dynamic Cairo Canvas**:
-  - Multi-threaded rendering pipeline with double-buffered transparency and subpixel Fontconfig font matching.
-  - X11 desktop click pass-through and automatic background focus management for seamless daily desktop use.
-- **Live Video Wallpaper Engine**:
-  - Embedded borderless MPV video renderer mapped directly to your desktop background.
-  - Multi-monitor resolution awareness with zero desktop window interference.
-  - Instant toggle via CLI hotkey (`desktop-suite --toggle-wallpaper`) and built-in XFCE keyboard shortcut binder (`<Super>w`).
-- **Real-Time Audio Spectrum**:
-  - Smooth audio visualizer with CAVA/PulseAudio backend, customizable bar counts, spectrum heights, and intensity multipliers.
+### 🎬 Live Desktop Showcase
+
+<div align="center">
+  <video src="assets/screenshots/00-hero-demo.mp4" width="100%" controls="controls" poster="assets/screenshots/01-hero-anurati-skyline.png">
+    Your browser does not support the video tag. <a href="assets/screenshots/00-hero-demo.mp4">Click here to watch the demo clip</a>.
+  </video>
+</div>
+
+<p align="center">
+  <a href="assets/screenshots/00-hero-demo.mp4">▶ <strong>Watch High-Definition Demo Clip (<code>00-hero-demo.mp4</code>)</strong></a>
+</p>
+
+> [!NOTE]
+> **Recording Note:** The demo clip was recorded using Peek (~20 FPS) to maintain minimal capture overhead on low-resource hardware. Live desktop rendering runs at a native, fluid 60 FPS.
+
+---
+
+## ⚡ Real-World Performance Benchmarks
+
+DesktopSuite was built and tested from day one to deliver silky smooth desktop animations while preserving hardware resources on entry-level and older laptops:
+
+| Metric | Measured Value |
+| :--- | :--- |
+| **Hardware** | Intel Core i3-4005U (2C/4T @ 1.70 GHz, Haswell), 4 GB DDR3 RAM |
+| **Graphics** | Intel HD Graphics 4400 (VA-API hardware acceleration) |
+| **Total RAM Footprint** | ~200 MB (unified GTK3/Cairo overlay + MPV video stream + PulseAudio listener) |
+| **CPU Utilization** | 3% – 4% during active 1080p video playback and real-time audio FFT visualization |
+
+---
+
+## 🛠️ Core Features (By Studio Tab)
+
+### 1. Live Wallpaper Engine
+- **Engine Lifecycle Controls**: Full control with `Start`, `Stop`, `Restart`, and `Pause`/`Resume` actions, accompanied by live status monitoring.
+- **Hardware-Accelerated Video Backdrops**: Native local video picker for MP4/H.264 files leveraging MPV and VA-API hardware decoding for negligible CPU usage.
+- **Real-Time Playback Tuning**:
+  - Live volume slider (0% to 100%).
+  - Playback speed multiplier slider (0.25x to 2.0x).
+  - Instant one-click `Mute Audio` toggle.
+- **Window & Power Management**:
+  - Screen Fit modes: `Fill (Zoom)`, `Fit (Letterbox)`, and `Stretch`.
+  - Smart Auto-Pause triggers: Automatically pauses wallpaper playback when application windows are maximized or fullscreen to preserve GPU bandwidth.
+  - FPS Limiter: Option to cap playback at 30 FPS, 24 FPS, or run at native video framerates.
+- **Desktop & Keyboard Shortcuts**:
+  - In-GUI XFCE keyboard shortcut manager to bind wallpaper toggling to any key combination (default `<Super>w`).
+  - Native autostart on user login toggle.
+
+### 2. Clock & Canvas HUD Studio
+- **26 Community Master Themes**: Built-in typography and widget presets ranging from Swiss minimalism to retro 8-bit arcade and cyberpunk aesthetics.
+- **Decoupled Component Hierarchy**:
+  - Independent visibility toggles for Clock, Date, and Visualizer.
+  - Decoupled Native RGB Color Pickers for Clock, Date, and Visualizer with instant live Cairo canvas redraw.
+  - Background Opacity slider (0% transparent to 100% black).
+- **Proportional & Independent Scaling**:
+  - Master Canvas Scale slider (0.5x to 2.5x).
+  - Independent Component Scaling switches with dedicated sliders for Clock Scale (0.4x to 3.0x), Date Scale (0.4x to 3.0x), and Visualizer Scale (0.4x to 3.0x).
+  - Visualizer Intensity slider (10% to 200%) to scale spectrum bar amplitude dynamically.
+- **Interactive Drag-and-Drop Canvas Layout**:
+  - Unlockable Edit/Drag Mode displaying bounding boxes and corner anchor nodes.
+  - Components can be repositioned independently anywhere across single or multi-monitor workspaces.
+  - Atomic coordinate persistence flushed directly to `~/.config/desktop-suite/config.json`.
+
+---
+
+> [!IMPORTANT]
+> **Desktop Icons & X11 Architecture Note:**
+> Under the X11 windowing system and `xfdesktop`, the hardware-accelerated video stream (`xwinwrap` + `mpv`) sits immediately above the root desktop wallpaper window, visually covering static desktop file icons while video playback is active. All DesktopSuite clock, date, and visualizer widgets remain fully interactive and visible above the video stream. When live video playback is stopped, desktop icons are immediately uncovered and accessible.
+
+---
+
+## 🎨 Theme & Studio Showcase
+
+<p align="center">
+  <img src="assets/screenshots/02-theme-anurati-audio-player.png" width="49%" alt="Anurati Audio Player Theme" />
+  <img src="assets/screenshots/03-canvas-editor-drag-scaling.png" width="49%" alt="Canvas Editor Drag & Scaling" />
+</p>
+<p align="center">
+  <img src="assets/screenshots/04-canvas-editor-radial-clock.png" width="49%" alt="Radial Orbit Clock in Canvas Editor" />
+  <img src="assets/screenshots/05-theme-cyberpunk-flhud.png" width="49%" alt="Cyberpunk 2077 and FLHUD Themes" />
+</p>
+<p align="center">
+  <img src="assets/screenshots/06-theme-wildyouth-botanical.png" width="100%" alt="Wild Youth Botanical Theme" />
+</p>
 
 ---
 
@@ -72,9 +142,9 @@ sudo apt install -y python3 python3-pip python3-gi python3-gi-cairo \
 ```
 
 ### 2. Install DesktopSuite
-Clone the repository and run the installer:
+Clone the repository and run the native installer:
 ```bash
-git clone https://github.com/your-username/DesktopSuite.git
+git clone https://github.com/majordark8139/DesktopSuite.git
 cd DesktopSuite
 ./install.sh
 ```
@@ -82,7 +152,7 @@ cd DesktopSuite
 The installer will:
 1. Create the executable launcher at `~/.local/bin/desktop-suite`.
 2. Install bundled fonts to `~/.local/share/fonts/desktop-suite/` and refresh Fontconfig.
-3. Install the application icon to `~/.local/share/icons/hicolor/256x256/apps/`.
+3. Install the application icon to `~/.local/share/icons/hicolor/256x256/apps/desktop-suite.png`.
 4. Register the desktop application menu entry `desktop-suite.desktop`.
 
 ---
@@ -94,13 +164,6 @@ Launch from your application menu or run from terminal:
 ```bash
 desktop-suite
 ```
-
-- **Live Wallpaper Tab**: Browse video wallpapers, select monitors, toggle live playback, and bind XFCE shortcuts (`<Super>w`).
-- **Clock & Canvas Tab**: Select from 26 themes, customize master & independent component scales, pick decoupled component colors, and toggle edit/drag mode.
-- **Audio Visualizer Tab**: Tune bar counts, sensitivity, smoothing factor, and visualizer intensity.
-
-### Edit / Drag Mode
-Click **"Toggle Edit Mode"** in the GUI or press your configured edit shortcut to display interactive drag bounding boxes around Clock, Date, and Visualizer. Drag them anywhere on your desktop and release to save coordinates.
 
 ### Command-Line Interface (CLI)
 DesktopSuite includes lightweight CLI control flags for keybindings and scripts:
@@ -116,7 +179,7 @@ desktop-suite --version            # Print version information
 
 ## 🧪 Testing
 
-Run the automated headless Cairo verification suite to test all 26 themes:
+Run the automated headless Cairo verification suite:
 ```bash
 python3 -m unittest discover tests
 ```
@@ -130,6 +193,14 @@ To cleanly remove DesktopSuite integration from your user environment:
 ./uninstall.sh
 ```
 *(Your git repository and configuration files remain untouched)*
+
+---
+
+## 🤖 Development & Acknowledgements
+
+DesktopSuite was designed and built with assistance from LLMs (Claude & Gemini) for rapid Cairo geometry prototyping, mathematical layout calibration, and scaffolding. All components have been manually tested, debugged, and benchmarked on physical hardware to ensure strict performance and memory limits.
+
+Special thanks to the community creators of Rainmeter skins (Mond, Enigma, FLHUD, Lines 2.0, Wild Youth, Chrono Block) whose artistic layouts inspired the open-source typography and rendering implementations in DesktopSuite.
 
 ---
 
