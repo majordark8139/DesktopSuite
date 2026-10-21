@@ -22,7 +22,7 @@
 </div>
 
 <p align="center">
-  <a href="assets/screenshots/00-hero-demo.mp4">▶ <strong>Watch High-Definition Demo Clip (<code>00-hero-demo.mp4</code>)</strong></a>
+  <a href="assets/screenshots/00-hero-demo.mp4">▶ <strong>Watch Demo Clip (<code>00-hero-demo.mp4</code>)</strong></a>
 </p>
 
 > [!NOTE]
