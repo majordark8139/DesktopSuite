@@ -30,6 +30,14 @@
 
 ---
 
+### 🖥️ Compatibility & Target Environment
+* **Verified Distribution:** Linux Mint 21.3 ("Virginia") XFCE Edition (amd64)
+* **Display Server:** X11 (`xwinwrap` and low-level Xlib window stacking require an active X11 session)
+* **Window Manager / Desktop:** Xfwm4 / `xfdesktop`
+* **Notice:** DesktopSuite has been developed and tested **exclusively on Linux Mint 21.3 XFCE under X11**. Support for Wayland sessions, alternate desktop environments (GNOME, KDE Plasma), or standalone tiling window managers (i3, bspwm, Hyprland) is currently untested and out of initial scope. Community testing and PRs are welcome.
+
+---
+
 ## ⚡ Real-World Performance Benchmarks
 
 DesktopSuite was built and tested from day one to deliver silky smooth desktop animations while preserving hardware resources on entry-level and older laptops:
