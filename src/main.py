@@ -111,6 +111,9 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gdk, GLib
 
+from src.core.fonts import register_bundled_fonts
+register_bundled_fonts()
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -834,7 +837,7 @@ class CanvasTab(Gtk.Box):
             self._labeled("BG Opacity:", self._opacity_scale), False, False, 0
         )
 
-        # Clock & Canvas Scale slider
+        # Master Scale slider
         scale_val = float(self._cfg.get("canvas.scale") or 1.0)
         adj_scale = Gtk.Adjustment(value=scale_val, lower=0.5, upper=2.5, step_increment=0.05)
         self._scale_slider = Gtk.Scale(
@@ -844,8 +847,72 @@ class CanvasTab(Gtk.Box):
         self._scale_slider.set_hexpand(True)
         self._scale_slider.connect("value-changed", self._on_scale)
         app_card.pack_start(
-            self._labeled("Canvas Scale:", self._scale_slider), False, False, 0
+            self._labeled("Master Scale:", self._scale_slider), False, False, 0
         )
+
+        # Independent Element Scaling switch
+        indep_row = Gtk.Box(spacing=8)
+        indep_lbl = Gtk.Label(label="Independent Element Scaling", xalign=0)
+        indep_lbl.set_hexpand(True)
+        self._indep_switch = Gtk.Switch()
+        self._indep_switch.set_active(bool(self._cfg.get("canvas.independent_scales", False)))
+        self._indep_switch.set_valign(Gtk.Align.CENTER)
+        self._indep_switch.connect("notify::active", self._on_independent_scales_toggled)
+        indep_row.pack_start(indep_lbl, True, True, 0)
+        indep_row.pack_end(self._indep_switch, False, False, 0)
+        app_card.pack_start(indep_row, False, False, 4)
+
+        # Collapsible / Revealer container holding 3 distinct sliders
+        self._revealer = Gtk.Revealer()
+        self._revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self._revealer.set_reveal_child(self._indep_switch.get_active())
+
+        indep_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        indep_vbox.set_margin_top(4)
+        indep_vbox.set_margin_bottom(6)
+        indep_vbox.set_margin_start(16)
+
+        # Clock Scale slider (0.4x to 3.0x, step 0.05)
+        clk_sc = float(self._cfg.get("canvas.clock_scale") or 1.0)
+        adj_clk = Gtk.Adjustment(value=clk_sc, lower=0.4, upper=3.0, step_increment=0.05)
+        self._clock_scale_slider = Gtk.Scale(
+            orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj_clk
+        )
+        self._clock_scale_slider.set_digits(2)
+        self._clock_scale_slider.set_hexpand(True)
+        self._clock_scale_slider.connect("value-changed", lambda s: self._on_elem_scale("clock_scale", s))
+        indep_vbox.pack_start(
+            self._labeled("Clock Scale:", self._clock_scale_slider), False, False, 0
+        )
+
+        # Date Scale slider (0.4x to 3.0x, step 0.05)
+        dt_sc = float(self._cfg.get("canvas.date_scale") or 1.0)
+        adj_dt = Gtk.Adjustment(value=dt_sc, lower=0.4, upper=3.0, step_increment=0.05)
+        self._date_scale_slider = Gtk.Scale(
+            orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj_dt
+        )
+        self._date_scale_slider.set_digits(2)
+        self._date_scale_slider.set_hexpand(True)
+        self._date_scale_slider.connect("value-changed", lambda s: self._on_elem_scale("date_scale", s))
+        indep_vbox.pack_start(
+            self._labeled("Date Scale:", self._date_scale_slider), False, False, 0
+        )
+
+        # Visualizer Scale slider (0.4x to 3.0x, step 0.05)
+        vis_sc = float(self._cfg.get("canvas.visualizer_scale") or 1.0)
+        adj_vis_sc = Gtk.Adjustment(value=vis_sc, lower=0.4, upper=3.0, step_increment=0.05)
+        self._vis_scale_slider = Gtk.Scale(
+            orientation=Gtk.Orientation.HORIZONTAL, adjustment=adj_vis_sc
+        )
+        self._vis_scale_slider.set_digits(2)
+        self._vis_scale_slider.set_hexpand(True)
+        self._vis_scale_slider.connect("value-changed", lambda s: self._on_elem_scale("visualizer_scale", s))
+        indep_vbox.pack_start(
+            self._labeled("Visualizer Scale:", self._vis_scale_slider), False, False, 0
+        )
+
+        self._revealer.add(indep_vbox)
+        app_card.pack_start(self._revealer, False, False, 0)
 
         # Visualizer Intensity slider
         vis_intensity = float(self._cfg.get("canvas.visualizer_intensity") or 0.65)
@@ -954,6 +1021,21 @@ class CanvasTab(Gtk.Box):
     def _on_scale(self, scale: Gtk.Scale) -> None:
         val = round(scale.get_value(), 2)
         self._cfg.set("canvas.scale", val)
+        if not self._building:
+            self._cfg.save()
+            self._ctrl.redraw_canvas()
+
+    def _on_independent_scales_toggled(self, switch: Gtk.Switch, _param) -> None:
+        active = switch.get_active()
+        self._revealer.set_reveal_child(active)
+        self._cfg.set("canvas.independent_scales", active)
+        if not self._building:
+            self._cfg.save()
+            self._ctrl.redraw_canvas()
+
+    def _on_elem_scale(self, key: str, scale: Gtk.Scale) -> None:
+        val = round(scale.get_value(), 2)
+        self._cfg.set(f"canvas.{key}", val)
         if not self._building:
             self._cfg.save()
             self._ctrl.redraw_canvas()

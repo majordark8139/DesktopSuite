@@ -121,8 +121,14 @@ DEFAULTS: dict[str, Any] = {
         # Font family used for clock and date labels.
         "font_family": "Sans",
 
-        # Overall canvas scale multiplier (0.5 to 2.5).
+        # Master canvas scale multiplier (0.5 to 2.5).
         "scale": 1.0,
+
+        # Independent element scaling toggle and individual scale multipliers (0.4 to 3.0).
+        "independent_scales": False,
+        "clock_scale": 1.0,
+        "date_scale": 1.0,
+        "visualizer_scale": 1.0,
 
         # Audio visualizer intensity multiplier (0.1 to 2.0).
         "visualizer_intensity": 0.65,

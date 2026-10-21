@@ -1,15 +1,15 @@
 """
 src.themes.collection
 =====================
-Master collection of 6 iconic community Rainmeter themes.
+Master collection of 6 iconic community Rainmeter themes with true typography.
 
 Themes included:
-1. Mond Minimal       — Elegant tracked day, dashed time subtext, baseline bars
-2. Elegance Two-Tone  — Clean ultra-thin split-colored digits with subtext
+1. Mond Minimal       — Tracked Comfortaa day, dashed time subtext, Montserrat date, baseline bars
+2. Elegance Two-Tone  — Ultra-tall hairline Bebas Neue digits (hours/min decoupled), lowercase subtext
 3. Sonder Axis        — Central vertical accent stroke, greeting, dual-direction bars
-4. Wild Youth         — Bold brush italic numerals with soft drop shadow & gradient bars
-5. Chrono Block       — Heavy monospace rectangular digits with square colon & LED block visualizer
-6. Vertical Overlap   — Two-tier stacked numbers with watermark day & right-aligned visualizer
+4. Wild Youth         — Expressive Caveat Bold handwriting with soft drop shadow & gradient bars
+5. Chrono Block       — Heavy condensed Bebas Neue digits, square block colon, LED matrix visualizer
+6. Vertical Overlap   — Giant Anton numbers stacked with slight overlap, faint watermark day
 """
 
 from __future__ import annotations
@@ -22,6 +22,10 @@ import cairo
 import numpy as np
 
 from src.themes.base import BaseTheme, TimeData
+from src.core.fonts import register_bundled_fonts
+
+# Ensure bundled fonts in assets/fonts/ are available to Cairo / Fontconfig
+register_bundled_fonts()
 
 # Alias requested in theme requirements
 ThemeBase = BaseTheme
@@ -57,9 +61,9 @@ class MondMinimalTheme(BaseTheme):
     **Mond Minimal**
 
     Iconic aesthetic inspired by the widely loved 'Mond' Rainmeter skin:
-    * Day: Large uppercase string with deliberate letter tracking (e.g., 'F  R  I  D  A  Y').
-    * Time: Minimalist centered time enclosed in dashes (e.g., '- 09:34 -').
-    * Date: Clean medium sans subtext (e.g., '20 OCTOBER, 2026').
+    * Day: Uppercase string rendered in Comfortaa or Montserrat Bold with generous tracking (letter spacing).
+    * Date: Clean medium sans ('DD MONTH, YYYY').
+    * Time: Framed with dashes '- HH:MM -' in Comfortaa.
     * Visualizer: Thin, delicate baseline spectrum bars.
     """
 
@@ -87,26 +91,23 @@ class MondMinimalTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
-        font_family = cfg.get("font_family", "Sans")
 
-        # Tracked uppercase day string (double space between letters)
-        day_tracked = "  ".join(list(time_data.day_str.upper()))
-
-        # Day label: font size 36 * scale, Bold
+        # 1. Day: Uppercase rendered in Comfortaa Bold with generous tracking
+        day_tracked = "   ".join(list(time_data.day_str.upper()))
         day_size = 36.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.select_font_face("Comfortaa", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
         ctx.set_font_size(day_size)
         self.set_hex_color(ctx, clock_color, alpha=1.0)
         ctx.move_to(0, day_size)
         ctx.show_text(day_tracked)
 
-        # Time label enclosed in dashes: font size 16 * scale, Normal
+        # 2. Time: Framed with dashes '- HH:MM -' in Comfortaa
         time_str = f"- {time_data.time_str} -"
-        time_size = 16.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        time_size = 18.0 * scale
+        ctx.select_font_face("Comfortaa", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(time_size)
-        self.set_hex_color(ctx, clock_color, alpha=0.90)
-        ctx.move_to(4 * scale, day_size + (24.0 * scale))
+        self.set_hex_color(ctx, clock_color, alpha=0.92)
+        ctx.move_to(4.0 * scale, day_size + (24.0 * scale))
         ctx.show_text(time_str)
 
     def draw_date(
@@ -119,14 +120,13 @@ class MondMinimalTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
-        font_family = cfg.get("font_family", "Sans")
 
-        # Date: e.g. "20 OCTOBER, 2026"
+        # Clean medium sans (DD MONTH, YYYY) in Montserrat
         month_name = time.strftime("%B", time.localtime()).upper()
         date_text = f"{time_data.day:02d} {month_name}, {time_data.year}"
 
         date_size = 14.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(date_size)
         self.set_hex_color(ctx, date_color, alpha=0.92)
         ctx.move_to(0, date_size)
@@ -178,9 +178,9 @@ class EleganceTwoToneTheme(BaseTheme):
     **Elegance Two-Tone**
 
     Minimalist two-tone digital typography with ultra-thin numerals:
-    * Hours in ``clock_color``, Minutes in ``visualizer_color``.
-    * Clean lowercase subtext: 'wednesday | october 21, 2026'.
-    * Low-profile 32-bar visualizer with rounded line caps.
+    * Time: Ultra-tall, hairline Bebas Neue or Montserrat Light digits. Hours in clock_color, Minutes in visualizer_color.
+    * Date: Lowercase clean subtext with pipe separator 'day | month dd, yyyy'.
+    * Visualizer: Low-profile 32-bar visualizer with rounded line caps.
     """
 
     name: str = "Elegance Two-Tone"
@@ -208,13 +208,11 @@ class EleganceTwoToneTheme(BaseTheme):
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
-        font_family = cfg.get("font_family", "Sans")
 
-        font_size = 72.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        font_size = 78.0 * scale
+        ctx.select_font_face("Bebas Neue", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(font_size)
 
-        # Split into Hours and Minutes
         parts = time_data.time_str.split(":")
         hr_str = parts[0] if len(parts) > 0 else f"{time_data.hour:02d}"
         min_str = parts[1] if len(parts) > 1 else f"{time_data.minute:02d}"
@@ -226,14 +224,14 @@ class EleganceTwoToneTheme(BaseTheme):
         ext_hr = ctx.text_extents(hr_str)
 
         # 2. Colon in clock_color with soft transparency
-        colon_x = ext_hr.x_advance + (4.0 * scale)
-        self.set_hex_color(ctx, clock_color, alpha=0.60)
+        colon_x = ext_hr.x_advance + (5.0 * scale)
+        self.set_hex_color(ctx, clock_color, alpha=0.50)
         ctx.move_to(colon_x, font_size)
         ctx.show_text(":")
         ext_colon = ctx.text_extents(":")
 
         # 3. Minutes in visualizer_color
-        min_x = colon_x + ext_colon.x_advance + (4.0 * scale)
+        min_x = colon_x + ext_colon.x_advance + (5.0 * scale)
         self.set_hex_color(ctx, vis_color, alpha=1.0)
         ctx.move_to(min_x, font_size)
         ctx.show_text(min_str)
@@ -248,13 +246,12 @@ class EleganceTwoToneTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
-        font_family = cfg.get("font_family", "Sans")
 
-        # Lowercase clean subtext: e.g. "wednesday | october 21, 2026"
+        # Lowercase clean subtext with pipe separator: 'day | month dd, yyyy' in Montserrat
         subtext = time.strftime("%A | %B %d, %Y", time.localtime()).lower()
         font_size = 13.0 * scale
 
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(font_size)
         self.set_hex_color(ctx, date_color, alpha=0.88)
         ctx.move_to(0, font_size)
@@ -275,7 +272,6 @@ class EleganceTwoToneTheme(BaseTheme):
         amp = float(cfg.get("visualizer_intensity", 0.65) or 0.65) / 0.65
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
 
-        # Resample or clamp to 32 bars for the low-profile profile
         target_bars = 32
         if len(audio_bars) != target_bars:
             indices = np.linspace(0, len(audio_bars) - 1, target_bars).astype(int)
@@ -313,7 +309,7 @@ class SonderAxisTheme(BaseTheme):
     **Sonder Axis**
 
     Editorial layout structured along a clean vertical accent axis:
-    * Central vertical axis line in ``date_color`` (0.4 alpha).
+    * Central vertical axis line in date_color (0.4 alpha).
     * Dynamic greeting: 'GOOD MORNING' / 'GOOD AFTERNOON' / 'GOOD EVENING'.
     * Bold 3-letter day abbreviation.
     * Symmetrical dual-direction horizontal bars extending outward from axis.
@@ -344,7 +340,6 @@ class SonderAxisTheme(BaseTheme):
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
         date_color = cfg.get("date_color", "#D0D0D0")
-        font_family = cfg.get("font_family", "Sans")
 
         cx = 120.0 * scale
 
@@ -355,7 +350,7 @@ class SonderAxisTheme(BaseTheme):
         ctx.line_to(cx, 90.0 * scale)
         ctx.stroke()
 
-        # 2. Dynamic greeting based on hour
+        # 2. Dynamic greeting based on hour in Montserrat Bold
         hr = time_data.hour
         greeting = (
             "GOOD MORNING" if hr < 12
@@ -363,16 +358,16 @@ class SonderAxisTheme(BaseTheme):
             else "GOOD EVENING"
         )
         greet_sz = 11.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
         ctx.set_font_size(greet_sz)
         self.set_hex_color(ctx, date_color, alpha=0.85)
         ctx.move_to(cx + (14.0 * scale), 20.0 * scale)
         ctx.show_text(greeting)
 
-        # 3. Bold compact 3-letter day (e.g. "WED")
+        # 3. Bold compact 3-letter day (e.g. "WED") in Montserrat Bold
         day_3 = time_data.day_str[:3].upper()
         day_sz = 44.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
         ctx.set_font_size(day_sz)
         self.set_hex_color(ctx, clock_color, alpha=1.0)
         ext = ctx.text_extents(day_3)
@@ -380,9 +375,9 @@ class SonderAxisTheme(BaseTheme):
         ctx.move_to(cx - ext.width - (14.0 * scale), 60.0 * scale)
         ctx.show_text(day_3)
 
-        # 4. Digital time to the right of the axis
+        # 4. Digital time to the right of the axis in Montserrat
         time_sz = 20.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(time_sz)
         self.set_hex_color(ctx, clock_color, alpha=0.95)
         ctx.move_to(cx + (14.0 * scale), 56.0 * scale)
@@ -398,13 +393,12 @@ class SonderAxisTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
-        font_family = cfg.get("font_family", "Sans")
 
         cx = 120.0 * scale
         date_text = time.strftime("%d %B %Y", time.localtime()).upper()
 
         date_sz = 12.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(date_sz)
         self.set_hex_color(ctx, date_color, alpha=0.80)
         ctx.move_to(cx + (14.0 * scale), 16.0 * scale)
@@ -426,7 +420,6 @@ class SonderAxisTheme(BaseTheme):
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
 
         cx = 120.0 * scale
-        # Symmetrical dual-direction bars extending outward from central vertical axis
         num_bars = min(16, len(audio_bars))
         bar_h = 2.0 * scale
         gap = 2.0 * scale
@@ -441,12 +434,10 @@ class SonderAxisTheme(BaseTheme):
             if bar_len <= 1.0 * scale:
                 continue
 
-            # Draw left arm
             ctx.move_to(cx - (4.0 * scale), y)
             ctx.line_to(cx - (4.0 * scale) - bar_len, y)
             ctx.stroke()
 
-            # Draw right arm
             ctx.move_to(cx + (4.0 * scale), y)
             ctx.line_to(cx + (4.0 * scale) + bar_len, y)
             ctx.stroke()
@@ -460,9 +451,9 @@ class WildYouthTheme(BaseTheme):
     """
     **Wild Youth**
 
-    Bold expressive aesthetic:
-    * Numerals: Bold italicized brush/cursive font ('HH:MM') with soft 2px drop-shadow.
-    * Date: Uppercase clean subtext with pipe separator.
+    Authentic handwriting brush aesthetic:
+    * Time: Dynamic brush handwriting using Caveat Bold with a soft blurred drop shadow.
+    * Subtext: Uppercase sans date with pipe divider ('WEDNESDAY | OCTOBER 21').
     * Visualizer: Gradient-filled spectrum bars fading into a soft base.
     """
 
@@ -491,17 +482,22 @@ class WildYouthTheme(BaseTheme):
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
 
-        # Expressive brush font selection with fallbacks
-        font_family = "Serif"
-        font_size = 68.0 * scale
-
-        ctx.select_font_face(font_family, cairo.FontSlant.ITALIC, cairo.FontWeight.BOLD)
+        font_size = 78.0 * scale
+        ctx.select_font_face("Caveat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
         ctx.set_font_size(font_size)
 
-        # 2px offset drop shadow (0.25 alpha black)
-        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.25)
-        ctx.move_to(2.0 * scale, font_size + (2.0 * scale))
-        ctx.show_text(time_data.time_str)
+        # Multi-pass soft blurred drop shadow
+        for ox, oy, alpha in [
+            (0, 3.0 * scale, 0.30),
+            (1.0 * scale, 2.0 * scale, 0.20),
+            (-1.0 * scale, 2.0 * scale, 0.20),
+            (0, 4.0 * scale, 0.15),
+            (2.0 * scale, 3.0 * scale, 0.12),
+            (-2.0 * scale, 3.0 * scale, 0.12),
+        ]:
+            ctx.set_source_rgba(0.0, 0.0, 0.0, alpha)
+            ctx.move_to(ox, font_size + oy)
+            ctx.show_text(time_data.time_str)
 
         # Foreground
         self.set_hex_color(ctx, clock_color, alpha=1.0)
@@ -518,13 +514,12 @@ class WildYouthTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
-        font_family = cfg.get("font_family", "Sans")
 
-        # e.g. "WEDNESDAY | OCTOBER 21"
+        # Uppercase sans date with pipe divider: e.g. "WEDNESDAY | OCTOBER 21" in Montserrat
         subtext = f"{time_data.day_str.upper()} | {time.strftime('%B %d', time.localtime()).upper()}"
         font_size = 12.0 * scale
 
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(font_size)
         self.set_hex_color(ctx, date_color, alpha=0.90)
         ctx.move_to(0, font_size)
@@ -563,7 +558,6 @@ class WildYouthTheme(BaseTheme):
                 continue
             x = start_x + i * (bar_w + gap) + (bar_w / 2.0)
 
-            # Gradient-filled bar: full opacity at top, 0.20 at base
             grad = cairo.LinearGradient(x, base_y - h, x, base_y)
             grad.add_color_stop_rgba(0.0, r, g, b, 1.0)
             grad.add_color_stop_rgba(1.0, r, g, b, 0.20)
@@ -582,11 +576,10 @@ class ChronoBlockTheme(BaseTheme):
     """
     **Chrono Block**
 
-    Heavy industrial cyberpunk digital block clock:
-    * Heavy rectangular monospace digits (font size 60 * scale).
-    * Colon drawn as two solid square blocks.
-    * Uppercase monospace subtext: 'DAY | DD MONTH YYYY'.
-    * Stepped LED block matrix bars (discrete vertical rectangles with 1.5px gaps).
+    Heavy industrial digital block clock:
+    * Time: Heavy condensed Bebas Neue glyphs with solid square colon blocks.
+    * Date: Uppercase subtext 'DAY | DD MONTH YYYY'.
+    * Visualizer: True segmented LED matrix blocks.
     """
 
     name: str = "Chrono Block"
@@ -614,8 +607,8 @@ class ChronoBlockTheme(BaseTheme):
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
 
-        font_size = 60.0 * scale
-        ctx.select_font_face("Monospace", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        font_size = 68.0 * scale
+        ctx.select_font_face("Bebas Neue", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(font_size)
 
         parts = time_data.time_str.split(":")
@@ -629,17 +622,17 @@ class ChronoBlockTheme(BaseTheme):
         ext_hr = ctx.text_extents(hr_str)
 
         # 2. Solid square block colon
-        colon_x = ext_hr.x_advance + (10.0 * scale)
+        colon_x = ext_hr.x_advance + (8.0 * scale)
         sq_size = 7.0 * scale
         self.set_hex_color(ctx, clock_color, alpha=0.90)
         # Upper square
-        ctx.rectangle(colon_x, font_size - (34.0 * scale), sq_size, sq_size)
+        ctx.rectangle(colon_x, font_size - (36.0 * scale), sq_size, sq_size)
         # Lower square
-        ctx.rectangle(colon_x, font_size - (16.0 * scale), sq_size, sq_size)
+        ctx.rectangle(colon_x, font_size - (18.0 * scale), sq_size, sq_size)
         ctx.fill()
 
         # 3. Minutes block
-        min_x = colon_x + sq_size + (10.0 * scale)
+        min_x = colon_x + sq_size + (8.0 * scale)
         ctx.move_to(min_x, font_size)
         ctx.show_text(min_str)
 
@@ -654,12 +647,12 @@ class ChronoBlockTheme(BaseTheme):
         scale = float(cfg.get("scale", 1.0) or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
 
-        # Uppercase monospace: e.g. "WEDNESDAY | 21 OCTOBER 2026"
+        # Uppercase subtext: e.g. "WEDNESDAY | 21 OCTOBER 2026"
         month_name = time.strftime("%B", time.localtime()).upper()
         subtext = f"{time_data.day_str.upper()} | {time_data.day:02d} {month_name} {time_data.year}"
 
-        font_size = 12.0 * scale
-        ctx.select_font_face("Monospace", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        font_size = 13.0 * scale
+        ctx.select_font_face("Bebas Neue", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(font_size)
         self.set_hex_color(ctx, date_color, alpha=0.85)
         ctx.move_to(0, font_size)
@@ -712,12 +705,12 @@ class ChronoBlockTheme(BaseTheme):
 
 class VerticalOverlapTheme(BaseTheme):
     """
-    **Vertical Overlap**
+    **Vertical Overlap** (StarLender aesthetic)
 
     Two-tier stacked numbers with bold architectural layering:
-    * Faint watermark 3-letter day ('WED') in 0.12 opacity behind numbers.
-    * Hours stacked above Minutes (size 64 * scale) with tight baseline overlap.
-    * Right-aligned micro date ('5th OCT, 2026').
+    * Time: Giant Anton numbers tightly stacked vertically (Hours directly over Minutes with slight overlap).
+    * Background Watermark: Giant faint day abbreviation behind the numbers.
+    * Subtext: Clean micro sans date with crisp right alignment ('21st OCT, 2026').
     * Compact 20-bar visualizer aligned cleanly to the right edge.
     """
 
@@ -745,32 +738,31 @@ class VerticalOverlapTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
-        font_family = cfg.get("font_family", "Sans")
 
         parts = time_data.time_str.split(":")
         hr_str = parts[0] if len(parts) > 0 else f"{time_data.hour:02d}"
         min_str = parts[1] if len(parts) > 1 else f"{time_data.minute:02d}"
 
-        # 1. Background Watermark: Giant faint 3-letter day
+        # 1. Background Watermark: Giant faint 3-letter day in Anton
         watermark_text = time_data.day_str[:3].upper()
-        wm_size = 90.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        wm_size = 96.0 * scale
+        ctx.select_font_face("Anton", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(wm_size)
-        self.set_hex_color(ctx, clock_color, alpha=0.12)
-        ctx.move_to(0, 78.0 * scale)
+        self.set_hex_color(ctx, clock_color, alpha=0.10)
+        ctx.move_to(0, 82.0 * scale)
         ctx.show_text(watermark_text)
 
-        # 2. Hour on top (size 64 * scale, 0.85 opacity)
-        num_size = 64.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        # 2. Hour on top in Anton (size 68 * scale, 0.85 opacity)
+        num_size = 68.0 * scale
+        ctx.select_font_face("Anton", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(num_size)
         self.set_hex_color(ctx, clock_color, alpha=0.85)
-        ctx.move_to(6.0 * scale, 52.0 * scale)
+        ctx.move_to(6.0 * scale, 54.0 * scale)
         ctx.show_text(hr_str)
 
-        # 3. Minute on bottom overlapping baseline of hours (size 64 * scale, 1.0 opacity)
+        # 3. Minute on bottom overlapping baseline of hours (size 68 * scale, 1.0 opacity)
         self.set_hex_color(ctx, clock_color, alpha=1.0)
-        ctx.move_to(6.0 * scale, 102.0 * scale)
+        ctx.move_to(6.0 * scale, 104.0 * scale)
         ctx.show_text(min_str)
 
     def draw_date(
@@ -783,18 +775,20 @@ class VerticalOverlapTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
-        font_family = cfg.get("font_family", "Sans")
 
-        # Right-aligned micro date: e.g. "21st OCT, 2026"
+        # Clean micro sans date with crisp right alignment: e.g. "21st OCT, 2026" in Montserrat
         month_abbr = time.strftime("%b", time.localtime()).upper()
         suffix = _ordinal_suffix(time_data.day)
         date_text = f"{time_data.day}{suffix} {month_abbr}, {time_data.year}"
 
         font_size = 12.0 * scale
-        ctx.select_font_face(font_family, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(font_size)
         self.set_hex_color(ctx, date_color, alpha=0.88)
-        ctx.move_to(0, font_size)
+        ext = ctx.text_extents(date_text)
+        # Align crisp right relative to standard component width 430 * scale
+        right_x = max(0.0, (430.0 * scale) - ext.width - (8.0 * scale))
+        ctx.move_to(right_x, font_size)
         ctx.show_text(date_text)
 
     def draw_visualizer(

@@ -54,6 +54,9 @@ from gi.repository import Gtk, Gdk, GLib
 import cairo
 import numpy as np
 
+from src.core.fonts import register_bundled_fonts
+register_bundled_fonts()
+
 log = logging.getLogger(__name__)
 
 # Frame period for the visualizer animation loop (~30 FPS).
@@ -259,31 +262,44 @@ class DesktopCanvasWindow(Gtk.Window):
         # 2 — Background dim layer.
         self._theme.draw_background(ctx, w, h, ccfg)
 
-        scale = float(ccfg.get("scale", 1.0) or 1.0)
+        master_scale = float(ccfg.get("scale", 1.0) or 1.0)
+        independent = bool(ccfg.get("independent_scales", False))
+
+        if independent:
+            clock_scale = master_scale * float(ccfg.get("clock_scale", 1.0) or 1.0)
+            date_scale = master_scale * float(ccfg.get("date_scale", 1.0) or 1.0)
+            vis_scale = master_scale * float(ccfg.get("visualizer_scale", 1.0) or 1.0)
+        else:
+            clock_scale = master_scale
+            date_scale = master_scale
+            vis_scale = master_scale
 
         # 3 — Clock.
         if ccfg.get("clock_enabled", True):
+            clock_cfg = {**ccfg, "scale": clock_scale}
             pos = self._drag.components.get("clock", {"x": 468, "y": 260})
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
-            self._theme.draw_clock(ctx, w, h, ccfg, self._time_data)
+            self._theme.draw_clock(ctx, w, h, clock_cfg, self._time_data)
             ctx.restore()
-            self._drag.update_bbox("clock", 430.0 * scale, 100.0 * scale)
+            self._drag.update_bbox("clock", 430.0 * clock_scale, 100.0 * clock_scale)
 
         # 4 — Date.
         if ccfg.get("date_enabled", True):
+            date_cfg = {**ccfg, "scale": date_scale}
             pos = self._drag.components.get("date", {"x": 468, "y": 370})
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
-            self._theme.draw_date(ctx, w, h, ccfg, self._time_data)
+            self._theme.draw_date(ctx, w, h, date_cfg, self._time_data)
             ctx.restore()
-            self._drag.update_bbox("date", 430.0 * scale, 30.0 * scale)
+            self._drag.update_bbox("date", 430.0 * date_scale, 30.0 * date_scale)
 
         # 5 — Visualizer.
         if ccfg.get("visualizer_enabled", True) and self._audio is not None:
+            vis_cfg = {**ccfg, "scale": vis_scale}
             pos = self._drag.components.get("visualizer", {"x": 468, "y": 410})
-            vis_w = int(430.0 * scale)
-            vis_h = self._get_visualizer_height()
+            vis_w = int(430.0 * vis_scale)
+            vis_h = self._get_visualizer_height(vis_scale)
 
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
@@ -292,11 +308,11 @@ class DesktopCanvasWindow(Gtk.Window):
                 self._bar_heights / vis_h if vis_h > 0
                 else np.zeros_like(self._bar_heights)
             )
-            self._theme.draw_visualizer(ctx, vis_w, vis_h, ccfg, norm_bars)
+            self._theme.draw_visualizer(ctx, vis_w, vis_h, vis_cfg, norm_bars)
             ctx.restore()
 
             # Update bounding box so DragController hit-testing is accurate.
-            self._drag.update_bbox("visualizer", 430.0 * scale, float(vis_h))
+            self._drag.update_bbox("visualizer", 430.0 * vis_scale, float(vis_h))
 
         # 6 — Edit-mode overlay.
         self._drag.draw_overlay(ctx)
@@ -360,10 +376,12 @@ class DesktopCanvasWindow(Gtk.Window):
             empty = cairo.Region()
             gdkwin.input_shape_combine_region(empty, 0, 0)
 
-    def _get_visualizer_height(self) -> int:
+    def _get_visualizer_height(self, scale_override: Optional[float] = None) -> int:
         """Return the visualizer panel height in pixels."""
-        # Default 54 px × scale from config (reference: darea 54 px at scale=1).
-        scale = float(self._cfg.get("canvas.scale") or 1.0)
+        if scale_override is not None:
+            scale = scale_override
+        else:
+            scale = float(self._cfg.get("canvas.scale") or 1.0)
         return max(10, int(54 * scale))
 
     def __repr__(self) -> str:  # pragma: no cover

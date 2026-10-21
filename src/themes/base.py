@@ -31,6 +31,9 @@ from typing import Any
 
 import cairo
 
+from src.core.fonts import register_bundled_fonts
+register_bundled_fonts()
+
 
 # ---------------------------------------------------------------------------
 # Shared time snapshot passed to every draw call on a given frame.
