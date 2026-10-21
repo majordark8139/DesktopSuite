@@ -738,17 +738,18 @@ class VerticalOverlapTheme(BaseTheme):
     ) -> None:
         scale = float(cfg.get("scale", 1.0) or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
+        date_color = cfg.get("date_color", "#D0D0D0")
 
         parts = time_data.time_str.split(":")
         hr_str = parts[0] if len(parts) > 0 else f"{time_data.hour:02d}"
         min_str = parts[1] if len(parts) > 1 else f"{time_data.minute:02d}"
 
-        # 1. Background Watermark: Giant faint 3-letter day in Anton
+        # 1. Background Watermark: Giant day abbreviation in Anton using date_color (opacity 0.32)
         watermark_text = time_data.day_str[:3].upper()
         wm_size = 96.0 * scale
         ctx.select_font_face("Anton", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(wm_size)
-        self.set_hex_color(ctx, clock_color, alpha=0.10)
+        self.set_hex_color(ctx, date_color, alpha=0.32)
         ctx.move_to(0, 82.0 * scale)
         ctx.show_text(watermark_text)
 
