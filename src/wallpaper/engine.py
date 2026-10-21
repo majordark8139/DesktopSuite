@@ -53,13 +53,16 @@ launch time.
 from __future__ import annotations
 
 import atexit
+import ctypes
+import ctypes.util
 import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal, Optional
 
 if __name__ == "__main__" and __package__ is None:
     # Allow running this file directly for testing.
@@ -71,6 +74,107 @@ from .autopause import AutoPauseWatcher, AutopauseMode
 from .ipc import MpvIPC, MPV_SOCKET
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# X11 Window Stacking Helpers
+# ---------------------------------------------------------------------------
+
+def _lower_x11_window_ctypes(xid: int) -> bool:
+    """Lower window to the absolute bottom of the X11 stack using libX11 XLowerWindow."""
+    try:
+        lib_name = ctypes.util.find_library("X11") or "libX11.so.6"
+        x11 = ctypes.CDLL(lib_name)
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        x11.XLowerWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x11.XFlush.argtypes = [ctypes.c_void_p]
+
+        disp = x11.XOpenDisplay(None)
+        if not disp:
+            return False
+        x11.XLowerWindow(disp, ctypes.c_ulong(xid))
+        x11.XFlush(disp)
+        x11.XCloseDisplay(disp)
+        return True
+    except Exception as exc:
+        log.debug("XLowerWindow failed for xid %s: %s", xid, exc)
+        return False
+
+
+def find_wallpaper_window_xids(pid: int | None = None) -> list[int]:
+    """Find X11 window IDs corresponding to xwinwrap or mpv."""
+    xids: set[int] = set()
+
+    pids_to_check: list[int] = []
+    if pid is not None:
+        pids_to_check.append(pid)
+        try:
+            res = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                if line.strip().isdigit():
+                    pids_to_check.append(int(line.strip()))
+        except Exception:
+            pass
+
+    for p in pids_to_check:
+        try:
+            res = subprocess.run(["xdotool", "search", "--pid", str(p)], capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    xids.add(int(line))
+        except Exception:
+            pass
+
+    for search_cmd in [
+        ["xdotool", "search", "--class", "xwinwrap"],
+        ["xdotool", "search", "--class", "mpv"],
+        ["xdotool", "search", "--name", "xwinwrap"],
+    ]:
+        try:
+            res = subprocess.run(search_cmd, capture_output=True, text=True)
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    xids.add(int(line))
+        except Exception:
+            pass
+
+    return list(xids)
+
+
+def lower_wallpaper_x11(pid: int | None = None) -> int:
+    """
+    Lower all wallpaper windows (xwinwrap/mpv) to the absolute bottom of the X11 stack.
+    Calls XLowerWindow(display, xid) via ctypes and invokes xdotool windowlower <xid>.
+    Returns the count of lowered windows.
+    """
+    xids = find_wallpaper_window_xids(pid)
+    count = 0
+    for xid in xids:
+        ok = _lower_x11_window_ctypes(xid)
+        try:
+            subprocess.run(["xdotool", "windowlower", str(xid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ok = True
+        except Exception:
+            pass
+        if ok:
+            count += 1
+    return count
+
+
+def _schedule_wallpaper_lowering(pid: int | None, callback: Optional[Callable[[], None]] = None) -> None:
+    """Background worker to ensure window is lowered as soon as X11 creates and maps it."""
+    def _worker():
+        for delay in [0.05, 0.15, 0.3, 0.6, 1.0]:
+            time.sleep(delay)
+            lowered = lower_wallpaper_x11(pid)
+            if lowered > 0 and callback:
+                callback()
+    threading.Thread(target=_worker, daemon=True, name="wallpaper-lower-worker").start()
+
 
 # ---------------------------------------------------------------------------
 # Constants — values taken directly from daemon_current.sh
@@ -136,9 +240,33 @@ class WallpaperEngine:
         self._proc: subprocess.Popen | None = None
         self._watcher: AutoPauseWatcher | None = None
         self._paused: bool = False
+        self._state_callbacks: list[Callable[[str], None]] = []
 
         # Register cleanup so the socket is always removed on interpreter exit.
         atexit.register(self._atexit_cleanup)
+
+    def add_state_callback(self, callback: Callable[[str], None]) -> None:
+        """Register a callback invoked on state changes ('started', 'stopped', 'paused', 'resumed', 'active')."""
+        if callback not in self._state_callbacks:
+            self._state_callbacks.append(callback)
+
+    def remove_state_callback(self, callback: Callable[[str], None]) -> None:
+        """Unregister a state callback."""
+        if callback in self._state_callbacks:
+            self._state_callbacks.remove(callback)
+
+    def _notify_state(self, state: str) -> None:
+        """Notify all registered callbacks of state transition."""
+        for cb in list(self._state_callbacks):
+            try:
+                cb(state)
+            except Exception as e:
+                log.debug("State callback error: %s", e)
+
+    def lower_wallpaper_window(self) -> int:
+        """Lower all wallpaper windows (xwinwrap/mpv) to the bottom of the X11 stack."""
+        pid = self._proc.pid if self._proc else None
+        return lower_wallpaper_x11(pid)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -218,6 +346,11 @@ class WallpaperEngine:
             log.error("start(): could not execute: %s", exc)
             return False
 
+        # Immediately lower wallpaper window and schedule continuous lowering as window maps
+        pid = self._proc.pid
+        lower_wallpaper_x11(pid)
+        _schedule_wallpaper_lowering(pid, lambda: self._notify_state("active"))
+
         # Wait for mpv to create its IPC socket (up to SOCKET_WAIT_TIMEOUT s).
         if not self._wait_for_socket():
             log.warning(
@@ -226,6 +359,7 @@ class WallpaperEngine:
             )
             # Process is running but IPC isn't ready — still return True
             # so the caller knows the subprocess started.
+            self._notify_state("started")
             return True
 
         log.info("IPC socket ready: %s", self.socket_path)
@@ -238,6 +372,7 @@ class WallpaperEngine:
         )
         self._watcher.start()
 
+        self._notify_state("started")
         return True
 
     def stop(self) -> None:
@@ -290,6 +425,7 @@ class WallpaperEngine:
         # Remove the socket file.
         self._remove_socket()
         self._paused = False
+        self._notify_state("stopped")
         log.info("Wallpaper engine stopped")
 
     def restart(
@@ -316,9 +452,11 @@ class WallpaperEngine:
         if self._paused:
             self.ipc.resume()
             self._paused = False
+            self._notify_state("resumed")
         else:
             self.ipc.pause()
             self._paused = True
+            self._notify_state("paused")
         return self._paused
 
     # ------------------------------------------------------------------

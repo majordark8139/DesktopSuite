@@ -287,7 +287,7 @@ class AppController:
         if not path or not Path(path).is_file():
             log.warning("start_wallpaper: no valid video_path in config")
             return False
-        return self.engine.start(
+        started = self.engine.start(
             video_path   = path,
             speed        = float(wp.get("playback_speed", 1.0)),
             volume       = int(wp.get("volume", 50)),
@@ -296,6 +296,9 @@ class AppController:
             fps_limit    = wp.get("fps_limit", "native"),
             autopause    = wp.get("autopause", "focus"),
         )
+        if started and self._canvas:
+            self._canvas.raise_above_wallpaper()
+        return started
 
     def stop_wallpaper(self) -> None:
         """Stop the wallpaper engine."""
@@ -304,7 +307,10 @@ class AppController:
     def restart_wallpaper(self) -> bool:
         """Stop then restart the wallpaper engine."""
         self.engine.stop()
-        return self.start_wallpaper()
+        res = self.start_wallpaper()
+        if self._canvas:
+            self._canvas.raise_above_wallpaper()
+        return res
 
     def start_canvas(self) -> None:
         """Create and show the DesktopCanvasWindow if not already shown."""
@@ -315,11 +321,13 @@ class AppController:
         theme = self.registry.get(theme_name) or self.registry.get_default()
         self.audio.start()
         self._canvas = DesktopCanvasWindow(
-            cfg_manager  = self.cfg,
-            theme        = theme,
-            audio_stream = self.audio,
+            cfg_manager      = self.cfg,
+            theme            = theme,
+            audio_stream     = self.audio,
+            wallpaper_engine = self.engine,
         )
         self._canvas.show_all()
+        self._canvas.raise_above_wallpaper()
         log.info("Canvas started")
 
     def stop_canvas(self) -> None:

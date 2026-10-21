@@ -51,6 +51,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gtk, Gdk, GLib
+import ctypes
+import ctypes.util
 import cairo
 import numpy as np
 
@@ -58,6 +60,30 @@ from src.core.fonts import register_bundled_fonts
 register_bundled_fonts()
 
 log = logging.getLogger(__name__)
+
+
+def _raise_x11_window(xid: int) -> bool:
+    """Raise the window to the top of its current stack layer in X11."""
+    try:
+        lib_name = ctypes.util.find_library("X11") or "libX11.so.6"
+        x11 = ctypes.CDLL(lib_name)
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        x11.XRaiseWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        x11.XFlush.argtypes = [ctypes.c_void_p]
+
+        disp = x11.XOpenDisplay(None)
+        if not disp:
+            return False
+        x11.XRaiseWindow(disp, ctypes.c_ulong(xid))
+        x11.XFlush(disp)
+        x11.XCloseDisplay(disp)
+        return True
+    except Exception as exc:
+        log.debug("XRaiseWindow failed for xid %s: %s", xid, exc)
+        return False
+
 
 # Frame period for the visualizer animation loop (~30 FPS).
 _ANIM_INTERVAL_MS: int = 33
@@ -81,6 +107,9 @@ class DesktopCanvasWindow(Gtk.Window):
     audio_stream:
         Optional pre-started :class:`~src.canvas.audio.AudioStream`.
         If ``None``, the visualizer is skipped.
+    wallpaper_engine:
+        Optional :class:`~src.wallpaper.engine.WallpaperEngine` instance
+        to coordinate Z-order stacking with.
     """
 
     def __init__(
@@ -88,11 +117,13 @@ class DesktopCanvasWindow(Gtk.Window):
         cfg_manager: Any,
         theme: Any,
         audio_stream: Optional[Any] = None,
+        wallpaper_engine: Optional[Any] = None,
     ) -> None:
         super().__init__()
         self._cfg      = cfg_manager
         self._theme    = theme
         self._audio    = audio_stream
+        self._wallpaper_engine = wallpaper_engine
 
         # Canvas config shortcut.
         self._ccfg: dict = self._cfg.get("canvas") or {}
@@ -122,12 +153,14 @@ class DesktopCanvasWindow(Gtk.Window):
         self.set_focus_on_map(False)
         self.set_app_paintable(True)
 
-        # Type hint: DESKTOP keeps us below all other windows.
-        # Fall through to DOCK + keep_below if DESKTOP is unsupported.
+        # Type hint: NORMAL with keep_below(True) places the window in the
+        # _NET_WM_STATE_BELOW layer, immediately above the root/xwinwrap desktop plane.
+        # Fall back to DESKTOP if needed.
         try:
+            self.set_type_hint(Gdk.WindowTypeHint.NORMAL)
+            self.set_keep_below(True)
+        except Exception:
             self.set_type_hint(Gdk.WindowTypeHint.DESKTOP)
-        except AttributeError:
-            self.set_type_hint(Gdk.WindowTypeHint.DOCK)
             self.set_keep_below(True)
 
         # RGBA visual for per-pixel alpha transparency.
@@ -178,11 +211,15 @@ class DesktopCanvasWindow(Gtk.Window):
         self.connect("motion-notify-event",  self._drag.on_motion)
 
         # ----------------------------------------------------------
-        # Apply click-through in normal mode
+        # Apply click-through in normal mode & raise above wallpaper
         # ----------------------------------------------------------
-        self.connect("realize", lambda w: self._apply_input_shape())
-        self.connect("map-event", lambda w, e: (self._apply_input_shape(), False)[1])
+        self.connect("realize", lambda w: (self._apply_input_shape(), self._raise_above_wallpaper()))
+        self.connect("map-event", lambda w, e: (self._apply_input_shape(), self._raise_above_wallpaper(), False)[2])
         self._apply_input_shape()
+
+        # Connect to wallpaper engine if supplied
+        if self._wallpaper_engine is not None:
+            self.connect_wallpaper_engine(self._wallpaper_engine)
 
         # ----------------------------------------------------------
         # GLib timers
@@ -360,6 +397,38 @@ class DesktopCanvasWindow(Gtk.Window):
         if self._theme:
             self._theme.invalidate()
         self._darea.queue_draw()
+
+    # ------------------------------------------------------------------
+    # Wallpaper coordination & Z-order stacking (public API)
+    # ------------------------------------------------------------------
+
+    def connect_wallpaper_engine(self, engine: Any) -> None:
+        """Connect to the wallpaper engine's state changes to raise canvas when wallpaper starts."""
+        self._wallpaper_engine = engine
+        if hasattr(engine, "add_state_callback"):
+            engine.add_state_callback(self._on_wallpaper_state_change)
+
+    def _on_wallpaper_state_change(self, state: str) -> None:
+        """Called whenever the wallpaper engine transitions state."""
+        if state in ("started", "active", "resumed", "running"):
+            GLib.idle_add(self._raise_above_wallpaper)
+
+    def raise_above_wallpaper(self) -> None:
+        """Public API: raise the canvas window above the desktop wallpaper stack without stealing focus."""
+        self._raise_above_wallpaper()
+
+    def _raise_above_wallpaper(self) -> None:
+        """Raise the GDK window above the wallpaper while maintaining keep_below and no focus."""
+        gdk_win = self.get_window()
+        if gdk_win:
+            gdk_win.raise_()
+            self.set_keep_below(True)
+            try:
+                xid = gdk_win.get_xid()
+                if xid:
+                    _raise_x11_window(xid)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Helpers

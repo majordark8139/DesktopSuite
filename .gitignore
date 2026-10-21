@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+venv/
+*.log
+/tmp/mpv-livewal.sock
+scratch_*.txt
