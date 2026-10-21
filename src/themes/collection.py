@@ -579,9 +579,11 @@ class WildYouthTheme(BaseTheme):
     **Wild Youth**
 
     Authentic handwriting brush aesthetic:
-    * Time: Dynamic brush handwriting using Caveat Bold with a soft blurred drop shadow.
-    * Subtext: Uppercase sans date with pipe divider ('WEDNESDAY | OCTOBER 21').
-    * Visualizer: Gradient-filled spectrum bars fading into a soft base.
+    * Clock Component: Time 'HH:MM' in font family 'Wild Youth' (fallback 'Caveat Bold'),
+      size ~ 84 * clock_scale, centered at w / 2.0, in clock_color.
+    * Date Component: Uppercase 'WEEKDAY | MONTH DD' in 'Montserrat' Bold, size ~ 12 * date_scale,
+      tracking ~ 2.5px, centered at w / 2.0, in date_color. Second line for year/micro-subtext ~ 10 * date_scale.
+    * Visualizer Component: 32-bar baseline visualizer centered at w / 2.0, in visualizer_color.
     """
 
     name: str = "Wild Youth"
@@ -606,30 +608,34 @@ class WildYouthTheme(BaseTheme):
         cfg: dict[str, Any],
         time_data: TimeData,
     ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.clock_scale', cfg.get('clock_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
 
-        font_size = 78.0 * scale
-        ctx.select_font_face("Caveat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
-        ctx.set_font_size(font_size)
+        time_str = time_data.time_str
+        font_sz = 84.0 * scale
+        try:
+            ctx.select_font_face("Wild Youth", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        except Exception:
+            ctx.select_font_face("Caveat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.set_font_size(font_sz)
 
-        # Multi-pass soft blurred drop shadow
-        for ox, oy, alpha in [
-            (0, 3.0 * scale, 0.30),
-            (1.0 * scale, 2.0 * scale, 0.20),
-            (-1.0 * scale, 2.0 * scale, 0.20),
-            (0, 4.0 * scale, 0.15),
-            (2.0 * scale, 3.0 * scale, 0.12),
-            (-2.0 * scale, 3.0 * scale, 0.12),
-        ]:
-            ctx.set_source_rgba(0.0, 0.0, 0.0, alpha)
-            ctx.move_to(ox, font_size + oy)
-            ctx.show_text(time_data.time_str)
+        ext = ctx.text_extents(time_str)
+        tx = (float(width) / 2.0) - (ext.width / 2.0) - ext.x_bearing
+        ty = 70.0 * scale
 
-        # Foreground
+        # Soft drop shadow for authentic depth
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.25)
+        ctx.move_to(tx + (2.0 * scale), ty + (2.0 * scale))
+        ctx.show_text(time_str)
+
         self.set_hex_color(ctx, clock_color, alpha=1.0)
-        ctx.move_to(0, font_size)
-        ctx.show_text(time_data.time_str)
+        ctx.move_to(tx, ty)
+        ctx.show_text(time_str)
 
     def draw_date(
         self,
@@ -639,18 +645,52 @@ class WildYouthTheme(BaseTheme):
         cfg: dict[str, Any],
         time_data: TimeData,
     ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.date_scale', cfg.get('date_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
 
-        # Uppercase sans date with pipe divider: e.g. "WEDNESDAY | OCTOBER 21" in Montserrat
-        subtext = f"{time_data.day_str.upper()} | {time.strftime('%B %d', time.localtime()).upper()}"
-        font_size = 12.0 * scale
+        cx = float(width) / 2.0
+
+        # Line 1: Uppercase "WEEKDAY | MONTH DD" in "Montserrat" Bold, size ~ 12 * date_scale, tracking ~ 2.5px
+        month_day = time.strftime("%B %d", time.localtime()).upper()
+        line1_text = f"{time_data.day_str.upper()} | {month_day}"
+        l1_sz = 12.0 * scale
+        l1_track = 2.5 * scale
+        l1_y = 18.0 * scale
+
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.set_font_size(l1_sz)
+        self.set_hex_color(ctx, date_color, alpha=0.92)
+
+        l1_exts = [ctx.text_extents(ch) for ch in line1_text]
+        l1_total_w = sum(ext.x_advance for ext in l1_exts) + l1_track * (len(line1_text) - 1)
+        curr_x = cx - (l1_total_w / 2.0)
+        for ch, ext in zip(line1_text, l1_exts):
+            ctx.move_to(curr_x, l1_y)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + l1_track
+
+        # Line 2: Year / micro-subtext ~ 10 * date_scale
+        line2_text = f"— {time_data.year} —"
+        l2_sz = 10.0 * scale
+        l2_track = 2.0 * scale
+        line2_y = l1_y + (18.0 * scale)
 
         ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
-        ctx.set_font_size(font_size)
-        self.set_hex_color(ctx, date_color, alpha=0.90)
-        ctx.move_to(0, font_size)
-        ctx.show_text(subtext)
+        ctx.set_font_size(l2_sz)
+        self.set_hex_color(ctx, date_color, alpha=0.75)
+
+        l2_exts = [ctx.text_extents(ch) for ch in line2_text]
+        l2_total_w = sum(ext.x_advance for ext in l2_exts) + l2_track * (len(line2_text) - 1)
+        curr_x = cx - (l2_total_w / 2.0)
+        for ch, ext in zip(line2_text, l2_exts):
+            ctx.move_to(curr_x, line2_y)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + l2_track
 
     def draw_visualizer(
         self,
@@ -663,23 +703,34 @@ class WildYouthTheme(BaseTheme):
         if audio_bars is None or len(audio_bars) == 0:
             return
 
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.visualizer_scale', cfg.get('visualizer_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         amp = float(cfg.get("visualizer_intensity", 0.65) or 0.65) / 0.65
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
         r, g, b = _hex_to_rgb(vis_color)
 
-        total_bars = len(audio_bars)
+        target_bars = 32
+        if len(audio_bars) != target_bars:
+            indices = np.linspace(0, len(audio_bars) - 1, target_bars).astype(int)
+            bars = audio_bars[indices]
+        else:
+            bars = audio_bars
+
         bar_w = 4.0 * scale
         gap = 3.0 * scale
-        total_w = total_bars * (bar_w + gap) - gap
-        start_x = (width - total_w) / 2.0
+        total_w = target_bars * (bar_w + gap) - gap
+        start_x = (float(width) / 2.0) - (total_w / 2.0)
         base_y = float(height) - (2.0 * scale)
 
         ctx.set_line_cap(cairo.LINE_CAP_ROUND)
         ctx.set_line_width(bar_w)
 
-        for i in range(total_bars):
-            h = float(audio_bars[i]) * (height - 6.0 * scale) * amp
+        for i in range(target_bars):
+            h = float(bars[i]) * (height - 6.0 * scale) * amp
             h = max(0.0, min(float(height - 4.0 * scale), h))
             if h <= 2.0 * scale:
                 continue
@@ -704,9 +755,11 @@ class ChronoBlockTheme(BaseTheme):
     **Chrono Block**
 
     Heavy industrial digital block clock:
-    * Time: Heavy condensed Bebas Neue glyphs with solid square colon blocks.
-    * Date: Uppercase subtext 'DAY | DD MONTH YYYY'.
-    * Visualizer: True segmented LED matrix blocks.
+    * Clock Component: Time 'HH:MM' in font family 'SF Sports Night' (fallback 'Anton'),
+      size ~ 74 * clock_scale, centered at w / 2.0, in clock_color.
+    * Date Component: Subtext 'Weekday | DD Month YYYY' (or 'AM/PM | Weekday | DD Month YYYY' in 12h mode)
+      in 'Montserrat' Regular, size ~ 13 * date_scale, centered at w / 2.0, in date_color.
+    * Visualizer Component: Stepped LED block-matrix bars centered at w / 2.0, in visualizer_color.
     """
 
     name: str = "Chrono Block"
@@ -731,37 +784,28 @@ class ChronoBlockTheme(BaseTheme):
         cfg: dict[str, Any],
         time_data: TimeData,
     ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.clock_scale', cfg.get('clock_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         clock_color = cfg.get("clock_color", "#FFFFFF")
 
-        font_size = 68.0 * scale
-        ctx.select_font_face("Bebas Neue", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
-        ctx.set_font_size(font_size)
-
-        parts = time_data.time_str.split(":")
-        hr_str = parts[0] if len(parts) > 0 else f"{time_data.hour:02d}"
-        min_str = parts[1] if len(parts) > 1 else f"{time_data.minute:02d}"
-
-        # 1. Hours block
+        time_str = time_data.time_str
+        font_sz = 74.0 * scale
+        try:
+            ctx.select_font_face("SF Sports Night", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        except Exception:
+            ctx.select_font_face("Anton", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.set_font_size(font_sz)
         self.set_hex_color(ctx, clock_color, alpha=1.0)
-        ctx.move_to(0, font_size)
-        ctx.show_text(hr_str)
-        ext_hr = ctx.text_extents(hr_str)
 
-        # 2. Solid square block colon
-        colon_x = ext_hr.x_advance + (8.0 * scale)
-        sq_size = 7.0 * scale
-        self.set_hex_color(ctx, clock_color, alpha=0.90)
-        # Upper square
-        ctx.rectangle(colon_x, font_size - (36.0 * scale), sq_size, sq_size)
-        # Lower square
-        ctx.rectangle(colon_x, font_size - (18.0 * scale), sq_size, sq_size)
-        ctx.fill()
-
-        # 3. Minutes block
-        min_x = colon_x + sq_size + (8.0 * scale)
-        ctx.move_to(min_x, font_size)
-        ctx.show_text(min_str)
+        ext = ctx.text_extents(time_str)
+        tx = (float(width) / 2.0) - (ext.width / 2.0) - ext.x_bearing
+        ty = 68.0 * scale
+        ctx.move_to(tx, ty)
+        ctx.show_text(time_str)
 
     def draw_date(
         self,
@@ -771,18 +815,32 @@ class ChronoBlockTheme(BaseTheme):
         cfg: dict[str, Any],
         time_data: TimeData,
     ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.date_scale', cfg.get('date_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         date_color = cfg.get("date_color", "#D0D0D0")
 
-        # Uppercase subtext: e.g. "WEDNESDAY | 21 OCTOBER 2026"
-        month_name = time.strftime("%B", time.localtime()).upper()
-        subtext = f"{time_data.day_str.upper()} | {time_data.day:02d} {month_name} {time_data.year}"
+        cx = float(width) / 2.0
+        month_name = time.strftime("%B", time.localtime())
+        weekday_name = time_data.day_str.capitalize()
+        if time_data.is_24h:
+            subtext = f"{weekday_name} | {time_data.day:02d} {month_name} {time_data.year}"
+        else:
+            ampm = "AM" if time_data.hour < 12 else "PM"
+            subtext = f"{ampm} | {weekday_name} | {time_data.day:02d} {month_name} {time_data.year}"
 
-        font_size = 13.0 * scale
-        ctx.select_font_face("Bebas Neue", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
-        ctx.set_font_size(font_size)
-        self.set_hex_color(ctx, date_color, alpha=0.85)
-        ctx.move_to(0, font_size)
+        date_sz = 13.0 * scale
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.set_font_size(date_sz)
+        self.set_hex_color(ctx, date_color, alpha=0.90)
+
+        ext = ctx.text_extents(subtext)
+        dx = cx - (ext.width / 2.0) - ext.x_bearing
+        dy = 22.0 * scale
+        ctx.move_to(dx, dy)
         ctx.show_text(subtext)
 
     def draw_visualizer(
@@ -796,7 +854,12 @@ class ChronoBlockTheme(BaseTheme):
         if audio_bars is None or len(audio_bars) == 0:
             return
 
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.visualizer_scale', cfg.get('visualizer_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         amp = float(cfg.get("visualizer_intensity", 0.65) or 0.65) / 0.65
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
 
@@ -807,7 +870,7 @@ class ChronoBlockTheme(BaseTheme):
         block_gap = 1.5 * scale
 
         total_w = total_bars * (bar_w + bar_gap) - bar_gap
-        start_x = (width - total_w) / 2.0
+        start_x = (float(width) / 2.0) - (total_w / 2.0)
         base_y = float(height) - (2.0 * scale)
 
         self.set_hex_color(ctx, vis_color, alpha=0.90)
