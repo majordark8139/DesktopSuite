@@ -47,12 +47,13 @@ def register_bundled_fonts() -> bool:
         # Add the directory to fontconfig app font search paths
         fc.FcConfigAppFontAddDir(None, str(font_dir).encode("utf-8"))
 
-        # Explicitly register individual TTF files
+        # Explicitly register individual TTF and OTF font files
         count = 0
-        for font_file in font_dir.glob("*.ttf"):
-            res = fc.FcConfigAppFontAddFile(None, str(font_file).encode("utf-8"))
-            if res:
-                count += 1
+        for ext_pattern in ("*.ttf", "*.otf"):
+            for font_file in font_dir.glob(ext_pattern):
+                res = fc.FcConfigAppFontAddFile(None, str(font_file).encode("utf-8"))
+                if res:
+                    count += 1
 
         _FONTS_REGISTERED = True
         log.info("Registered %d bundled fonts from %s", count, font_dir)

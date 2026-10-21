@@ -58,13 +58,21 @@ def _ordinal_suffix(day: int) -> str:
 
 class MondMinimalTheme(BaseTheme):
     """
-    **Mond Minimal**
+    **Mond Minimal** (Option A)
 
     Iconic aesthetic inspired by the widely loved 'Mond' Rainmeter skin:
-    * Day: Uppercase string rendered in Comfortaa or Montserrat Bold with generous tracking (letter spacing).
-    * Date: Clean medium sans ('DD MONTH, YYYY').
-    * Time: Framed with dashes '- HH:MM -' in Comfortaa.
-    * Visualizer: Thin, delicate baseline spectrum bars.
+    * Date Component:
+      - Line 1 (Day): All-caps weekday (e.g. "W E D N E S D A Y") using font family "Anurati"
+        (fallback: "Montserrat Bold"), size ~ 38 * scale, explicit tracking (~8px * scale),
+        centered at w / 2.
+      - Line 2 (Date): Uppercase date formatted as "DD MONTH, YYYY." (e.g. "21 OCTOBER, 2026.")
+        in font family "Montserrat" (bold), size ~ 13 * scale, letter-spacing 1.5px,
+        centered at w / 2 with Y-offset ~ +36 * scale below Line 1.
+    * Clock Component:
+      - Dashed Time: Formatted as "- HH:MM -" (e.g. "- 03:04 -") in font family "Montserrat",
+        font size ~ 15 * scale, strictly centered horizontally at w / 2.
+    * Visualizer Component:
+      - Minimalist thin baseline bars (width 2.5 * scale, gap 3 * scale) centered horizontally at w / 2.
     """
 
     name: str = "Mond Minimal"
@@ -81,35 +89,6 @@ class MondMinimalTheme(BaseTheme):
             ctx.set_source_rgba(0.0, 0.0, 0.0, opacity)
             ctx.paint()
 
-    def draw_clock(
-        self,
-        ctx: cairo.Context,
-        width: int,
-        height: int,
-        cfg: dict[str, Any],
-        time_data: TimeData,
-    ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
-        clock_color = cfg.get("clock_color", "#FFFFFF")
-
-        # 1. Day: Uppercase rendered in Comfortaa Bold with generous tracking
-        day_tracked = "   ".join(list(time_data.day_str.upper()))
-        day_size = 36.0 * scale
-        ctx.select_font_face("Comfortaa", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
-        ctx.set_font_size(day_size)
-        self.set_hex_color(ctx, clock_color, alpha=1.0)
-        ctx.move_to(0, day_size)
-        ctx.show_text(day_tracked)
-
-        # 2. Time: Framed with dashes '- HH:MM -' in Comfortaa
-        time_str = f"- {time_data.time_str} -"
-        time_size = 18.0 * scale
-        ctx.select_font_face("Comfortaa", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
-        ctx.set_font_size(time_size)
-        self.set_hex_color(ctx, clock_color, alpha=0.92)
-        ctx.move_to(4.0 * scale, day_size + (24.0 * scale))
-        ctx.show_text(time_str)
-
     def draw_date(
         self,
         ctx: cairo.Context,
@@ -118,19 +97,84 @@ class MondMinimalTheme(BaseTheme):
         cfg: dict[str, Any],
         time_data: TimeData,
     ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
-        date_color = cfg.get("date_color", "#D0D0D0")
+        # Scale calculation respecting independent component scales
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.date_scale', cfg.get('date_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
+        date_color = cfg.get("date_color", "#FFFFFF")
 
-        # Clean medium sans (DD MONTH, YYYY) in Montserrat
+        # Line 1 (Day): All-caps weekday in "Anurati" (fallback: "Montserrat Bold"), size ~ 38 * scale
+        day_str = time_data.day_str.upper()
+        day_sz = 38.0 * scale
+        tracking = 8.0 * scale
+        line1_y = 38.0 * scale
+
+        try:
+            ctx.select_font_face("Anurati", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        except Exception:
+            ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.set_font_size(day_sz)
+        self.set_hex_color(ctx, date_color, alpha=1.0)
+
+        char_extents = [ctx.text_extents(ch) for ch in day_str]
+        total_day_w = sum(ext.x_advance for ext in char_extents) + tracking * (len(day_str) - 1)
+        curr_x = (float(width) / 2.0) - (total_day_w / 2.0)
+        for ch, ext in zip(day_str, char_extents):
+            ctx.move_to(curr_x, line1_y)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + tracking
+
+        # Line 2 (Date): Uppercase date formatted as "DD MONTH, YYYY." in "Montserrat" (bold), size ~ 13 * scale, letter-spacing 1.5px
         month_name = time.strftime("%B", time.localtime()).upper()
-        date_text = f"{time_data.day:02d} {month_name}, {time_data.year}"
+        date_str = f"{time_data.day:02d} {month_name}, {time_data.year}."
+        date_sz = 13.0 * scale
+        date_tracking = 1.5 * scale
+        line2_y = line1_y + (36.0 * scale)
 
-        date_size = 14.0 * scale
-        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
-        ctx.set_font_size(date_size)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.set_font_size(date_sz)
         self.set_hex_color(ctx, date_color, alpha=0.92)
-        ctx.move_to(0, date_size)
-        ctx.show_text(date_text)
+
+        date_extents = [ctx.text_extents(ch) for ch in date_str]
+        total_date_w = sum(ext.x_advance for ext in date_extents) + date_tracking * (len(date_str) - 1)
+        curr_date_x = (float(width) / 2.0) - (total_date_w / 2.0)
+        for ch, ext in zip(date_str, date_extents):
+            ctx.move_to(curr_date_x, line2_y)
+            ctx.show_text(ch)
+            curr_date_x += ext.x_advance + date_tracking
+
+    def draw_clock(
+        self,
+        ctx: cairo.Context,
+        width: int,
+        height: int,
+        cfg: dict[str, Any],
+        time_data: TimeData,
+    ) -> None:
+        # Scale calculation respecting independent component scales
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.clock_scale', cfg.get('clock_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
+        clock_color = cfg.get("clock_color", "#FFFFFF")
+
+        # Dashed Time: "- HH:MM -" in "Montserrat", size ~ 15 * scale
+        dashed_time = f"- {time_data.time_str} -"
+        time_sz = 15.0 * scale
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.set_font_size(time_sz)
+        self.set_hex_color(ctx, clock_color, alpha=0.95)
+
+        ext = ctx.text_extents(dashed_time)
+        tx = (float(width) / 2.0) - (ext.width / 2.0) - ext.x_bearing
+        ty = 20.0 * scale
+        ctx.move_to(tx, ty)
+        ctx.show_text(dashed_time)
 
     def draw_visualizer(
         self,
@@ -143,15 +187,20 @@ class MondMinimalTheme(BaseTheme):
         if audio_bars is None or len(audio_bars) == 0:
             return
 
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.visualizer_scale', cfg.get('visualizer_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         amp = float(cfg.get("visualizer_intensity", 0.65) or 0.65) / 0.65
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
 
         total_bars = len(audio_bars)
-        bar_w = 2.0 * scale
+        bar_w = 2.5 * scale
         gap = 3.0 * scale
         total_w = total_bars * (bar_w + gap) - gap
-        start_x = (width - total_w) / 2.0
+        start_x = (float(width) / 2.0) - (total_w / 2.0)
         base_y = float(height) - (2.0 * scale)
 
         ctx.set_line_cap(cairo.LINE_CAP_BUTT)

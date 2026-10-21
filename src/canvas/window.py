@@ -278,9 +278,11 @@ class DesktopCanvasWindow(Gtk.Window):
         if ccfg.get("clock_enabled", True):
             clock_cfg = {**ccfg, "scale": clock_scale}
             pos = self._drag.components.get("clock", {"x": 468, "y": 260})
+            clk_w = int(430.0 * clock_scale)
+            clk_h = int(100.0 * clock_scale)
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
-            self._theme.draw_clock(ctx, w, h, clock_cfg, self._time_data)
+            self._theme.draw_clock(ctx, clk_w, clk_h, clock_cfg, self._time_data)
             ctx.restore()
             self._drag.update_bbox("clock", 430.0 * clock_scale, 100.0 * clock_scale)
 
@@ -288,11 +290,13 @@ class DesktopCanvasWindow(Gtk.Window):
         if ccfg.get("date_enabled", True):
             date_cfg = {**ccfg, "scale": date_scale}
             pos = self._drag.components.get("date", {"x": 468, "y": 370})
+            dt_w = int(430.0 * date_scale)
+            dt_h = int(85.0 * date_scale)
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
-            self._theme.draw_date(ctx, w, h, date_cfg, self._time_data)
+            self._theme.draw_date(ctx, dt_w, dt_h, date_cfg, self._time_data)
             ctx.restore()
-            self._drag.update_bbox("date", 430.0 * date_scale, 30.0 * date_scale)
+            self._drag.update_bbox("date", 430.0 * date_scale, 85.0 * date_scale)
 
         # 5 — Visualizer.
         if ccfg.get("visualizer_enabled", True) and self._audio is not None:
