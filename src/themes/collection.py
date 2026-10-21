@@ -357,11 +357,20 @@ class SonderAxisTheme(BaseTheme):
     """
     **Sonder Axis**
 
-    Editorial layout structured along a clean vertical accent axis:
-    * Central vertical axis line in date_color (0.4 alpha).
-    * Dynamic greeting: 'GOOD MORNING' / 'GOOD AFTERNOON' / 'GOOD EVENING'.
-    * Bold 3-letter day abbreviation.
-    * Symmetrical dual-direction horizontal bars extending outward from axis.
+    Centered vertical spine layout inspired by clean editorial design:
+    * Date Component:
+      - Vertical Axis Line: 1.5px vertical stroke along x = cx (from Y=0 to Y=h) with 0.35 alpha.
+      - Line 1 & Line 2 (Greeting): Stacked micro greeting centered at cx:
+        "GOOD" (size 10 * scale, tracking 3px * scale), followed by "MORNING" / "AFTERNOON" / "EVENING" (Y-offset +14 * scale).
+      - Line 3 (Day): 3-letter uppercase day in font family "Shojumaru" (fallback: "Montserrat Bold"),
+        font size ~ 40 * scale, centered at cx (Y-offset +50 * scale), rendered in clock_color.
+      - Line 4 (Date): Micro uppercase date "DD MONTH" (e.g. "21 OCTOBER") in font family "Montserrat" Bold,
+        font size ~ 11 * scale, tracking ~ 2px * scale, centered at cx (Y-offset +78 * scale), rendered in date_color.
+    * Clock Component:
+      - Micro Time: Formatted as "HH:MM PM" in font family "Montserrat", font size ~ 12 * scale, tracking 1.5px * scale,
+        strictly centered horizontally at w / 2.0.
+    * Visualizer Component:
+      - Symmetrical dual-direction horizontal bars extending left and right from w / 2.0.
     """
 
     name: str = "Sonder Axis"
@@ -378,60 +387,6 @@ class SonderAxisTheme(BaseTheme):
             ctx.set_source_rgba(0.0, 0.0, 0.0, opacity)
             ctx.paint()
 
-    def draw_clock(
-        self,
-        ctx: cairo.Context,
-        width: int,
-        height: int,
-        cfg: dict[str, Any],
-        time_data: TimeData,
-    ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
-        clock_color = cfg.get("clock_color", "#FFFFFF")
-        date_color = cfg.get("date_color", "#D0D0D0")
-
-        cx = 120.0 * scale
-
-        # 1. Central accent vertical stroke
-        ctx.set_line_width(1.5 * scale)
-        self.set_hex_color(ctx, date_color, alpha=0.40)
-        ctx.move_to(cx, 0)
-        ctx.line_to(cx, 90.0 * scale)
-        ctx.stroke()
-
-        # 2. Dynamic greeting based on hour in Montserrat Bold
-        hr = time_data.hour
-        greeting = (
-            "GOOD MORNING" if hr < 12
-            else "GOOD AFTERNOON" if hr < 18
-            else "GOOD EVENING"
-        )
-        greet_sz = 11.0 * scale
-        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
-        ctx.set_font_size(greet_sz)
-        self.set_hex_color(ctx, date_color, alpha=0.85)
-        ctx.move_to(cx + (14.0 * scale), 20.0 * scale)
-        ctx.show_text(greeting)
-
-        # 3. Bold compact 3-letter day (e.g. "WED") in Montserrat Bold
-        day_3 = time_data.day_str[:3].upper()
-        day_sz = 44.0 * scale
-        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
-        ctx.set_font_size(day_sz)
-        self.set_hex_color(ctx, clock_color, alpha=1.0)
-        ext = ctx.text_extents(day_3)
-        # Position day to the left of the axis
-        ctx.move_to(cx - ext.width - (14.0 * scale), 60.0 * scale)
-        ctx.show_text(day_3)
-
-        # 4. Digital time to the right of the axis in Montserrat
-        time_sz = 20.0 * scale
-        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
-        ctx.set_font_size(time_sz)
-        self.set_hex_color(ctx, clock_color, alpha=0.95)
-        ctx.move_to(cx + (14.0 * scale), 56.0 * scale)
-        ctx.show_text(time_data.time_str)
-
     def draw_date(
         self,
         ctx: cairo.Context,
@@ -440,18 +395,134 @@ class SonderAxisTheme(BaseTheme):
         cfg: dict[str, Any],
         time_data: TimeData,
     ) -> None:
-        scale = float(cfg.get("scale", 1.0) or 1.0)
-        date_color = cfg.get("date_color", "#D0D0D0")
+        # Scale resolution
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.date_scale', cfg.get('date_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
+        date_color = cfg.get("date_color", "#FFFFFF")
+        clock_color = cfg.get("clock_color", "#FFFFFF")
 
-        cx = 120.0 * scale
-        date_text = time.strftime("%d %B %Y", time.localtime()).upper()
+        cx = float(width) / 2.0
 
-        date_sz = 12.0 * scale
-        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        # 1. Vertical Line: 1.5px vertical stroke along x = cx (from Y=0 to Y=h)
+        ctx.set_line_width(1.5 * scale)
+        self.set_hex_color(ctx, date_color, alpha=0.35)
+        ctx.move_to(cx, 0.0)
+        ctx.line_to(cx, float(height))
+        ctx.stroke()
+
+        line1_y = 12.0 * scale
+
+        # 2. Line 1 (Greeting 1): "GOOD" in Montserrat Bold (size 10 * scale, tracking 3px * scale)
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.set_font_size(10.0 * scale)
+        self.set_hex_color(ctx, date_color, alpha=0.90)
+
+        g1_text = "GOOD"
+        g1_track = 3.0 * scale
+        g1_exts = [ctx.text_extents(ch) for ch in g1_text]
+        g1_total_w = sum(ext.x_advance for ext in g1_exts) + g1_track * (len(g1_text) - 1)
+        curr_x = cx - (g1_total_w / 2.0)
+        for ch, ext in zip(g1_text, g1_exts):
+            ctx.move_to(curr_x, line1_y)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + g1_track
+
+        # 3. Line 2 (Greeting 2): Contextual "MORNING" / "AFTERNOON" / "EVENING" (Y-offset +14 * scale)
+        hr = time_data.hour
+        context = (
+            "MORNING" if hr < 12
+            else "AFTERNOON" if hr < 18
+            else "EVENING"
+        )
+        line2_y = line1_y + (14.0 * scale)
+        g2_exts = [ctx.text_extents(ch) for ch in context]
+        g2_total_w = sum(ext.x_advance for ext in g2_exts) + g1_track * (len(context) - 1)
+        curr_x = cx - (g2_total_w / 2.0)
+        for ch, ext in zip(context, g2_exts):
+            ctx.move_to(curr_x, line2_y)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + g1_track
+
+        # 4. Line 3 (Day): 3-letter uppercase day in "Shojumaru" (fallback: "Montserrat Bold"), size ~ 40 * scale (Y-offset +50 * scale)
+        day_3 = time_data.day_str[:3].upper()
+        day_sz = 40.0 * scale
+        line3_y = line1_y + (50.0 * scale)
+        try:
+            ctx.select_font_face("Shojumaru", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        except Exception:
+            ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        ctx.set_font_size(day_sz)
+        self.set_hex_color(ctx, clock_color, alpha=1.0)
+        ext_day = ctx.text_extents(day_3)
+        day_x = cx - (ext_day.width / 2.0) - ext_day.x_bearing
+        ctx.move_to(day_x, line3_y)
+        ctx.show_text(day_3)
+
+        # 5. Line 4 (Date): Micro uppercase date "DD MONTH" in Montserrat Bold (size 11 * scale, tracking 2px * scale, Y-offset +78 * scale)
+        month_name = time.strftime("%B", time.localtime()).upper()
+        date_text = f"{time_data.day:02d} {month_name}"
+        date_sz = 11.0 * scale
+        date_track = 2.0 * scale
+        line4_y = line1_y + (78.0 * scale)
+
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
         ctx.set_font_size(date_sz)
-        self.set_hex_color(ctx, date_color, alpha=0.80)
-        ctx.move_to(cx + (14.0 * scale), 16.0 * scale)
-        ctx.show_text(date_text)
+        self.set_hex_color(ctx, date_color, alpha=0.90)
+
+        d_exts = [ctx.text_extents(ch) for ch in date_text]
+        d_total_w = sum(ext.x_advance for ext in d_exts) + date_track * (len(date_text) - 1)
+        curr_x = cx - (d_total_w / 2.0)
+        for ch, ext in zip(date_text, d_exts):
+            ctx.move_to(curr_x, line4_y)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + date_track
+
+    def draw_clock(
+        self,
+        ctx: cairo.Context,
+        width: int,
+        height: int,
+        cfg: dict[str, Any],
+        time_data: TimeData,
+    ) -> None:
+        # Scale resolution
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.clock_scale', cfg.get('clock_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
+        clock_color = cfg.get("clock_color", "#FFFFFF")
+
+        cx = float(width) / 2.0
+
+        if time_data.is_24h:
+            time_str = f"{time_data.hour:02d}:{time_data.minute:02d}"
+        else:
+            hr_12 = time_data.hour % 12
+            if hr_12 == 0:
+                hr_12 = 12
+            ampm = "AM" if time_data.hour < 12 else "PM"
+            time_str = f"{hr_12:02d}:{time_data.minute:02d} {ampm}"
+
+        time_sz = 12.0 * scale
+        time_track = 1.5 * scale
+        ctx.select_font_face("Montserrat", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        ctx.set_font_size(time_sz)
+        self.set_hex_color(ctx, clock_color, alpha=0.95)
+
+        t_exts = [ctx.text_extents(ch) for ch in time_str]
+        t_total_w = sum(ext.x_advance for ext in t_exts) + time_track * (len(time_str) - 1)
+        curr_x = cx - (t_total_w / 2.0)
+        ty = 18.0 * scale
+        for ch, ext in zip(time_str, t_exts):
+            ctx.move_to(curr_x, ty)
+            ctx.show_text(ch)
+            curr_x += ext.x_advance + time_track
 
     def draw_visualizer(
         self,
@@ -464,11 +535,16 @@ class SonderAxisTheme(BaseTheme):
         if audio_bars is None or len(audio_bars) == 0:
             return
 
-        scale = float(cfg.get("scale", 1.0) or 1.0)
+        scale = (
+            (cfg.get('canvas.scale', cfg.get('scale', 1.0)) * cfg.get('canvas.visualizer_scale', cfg.get('visualizer_scale', 1.0)))
+            if (cfg.get('canvas.independent_scales') or cfg.get('independent_scales'))
+            else cfg.get('canvas.scale', cfg.get('scale', 1.0))
+        )
+        scale = float(scale or 1.0)
         amp = float(cfg.get("visualizer_intensity", 0.65) or 0.65) / 0.65
         vis_color = cfg.get("visualizer_color", "#FFFFFF")
 
-        cx = 120.0 * scale
+        cx = float(width) / 2.0
         num_bars = min(16, len(audio_bars))
         bar_h = 2.0 * scale
         gap = 2.0 * scale
@@ -483,10 +559,12 @@ class SonderAxisTheme(BaseTheme):
             if bar_len <= 1.0 * scale:
                 continue
 
+            # Left bar extending outward from center spine
             ctx.move_to(cx - (4.0 * scale), y)
             ctx.line_to(cx - (4.0 * scale) - bar_len, y)
             ctx.stroke()
 
+            # Right bar extending outward from center spine
             ctx.move_to(cx + (4.0 * scale), y)
             ctx.line_to(cx + (4.0 * scale) + bar_len, y)
             ctx.stroke()
