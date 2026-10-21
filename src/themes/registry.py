@@ -547,6 +547,24 @@ from .collection import (
     WildYouthTheme,
     ChronoBlockTheme,
     VerticalOverlapTheme,
+    TextimeTheme,
+    LumieroTheme,
+    FLHUDTheme,
+    LinesTwoTheme,
+    EnigmaTheme,
+    PixelArcadeTheme,
+    DotMatrixTheme,
+    LiquidGlassTheme,
+    CircularOrbitTheme,
+    EleganceThinTheme,
+    CyberpunkTheme,
+    AstroPosterTheme,
+    NeumorphSoftTheme,
+    BraunModernTheme,
+    NordicGlintTheme,
+    MatrixTerminalTheme,
+    ZenGardenTheme,
+    VectorTacticalTheme,
 )
 
 REGISTRY = ThemeRegistry()
@@ -558,4 +576,23 @@ REGISTRY.add(SonderAxisTheme())
 REGISTRY.add(WildYouthTheme())
 REGISTRY.add(ChronoBlockTheme())
 REGISTRY.add(VerticalOverlapTheme())
+REGISTRY.add(TextimeTheme())
+REGISTRY.add(LumieroTheme())
+REGISTRY.add(FLHUDTheme())
+REGISTRY.add(LinesTwoTheme())
+REGISTRY.add(EnigmaTheme())
+REGISTRY.add(PixelArcadeTheme())
+REGISTRY.add(DotMatrixTheme())
+REGISTRY.add(LiquidGlassTheme())
+REGISTRY.add(CircularOrbitTheme())
+REGISTRY.add(EleganceThinTheme())
+REGISTRY.add(CyberpunkTheme())
+REGISTRY.add(AstroPosterTheme())
+REGISTRY.add(NeumorphSoftTheme())
+REGISTRY.add(BraunModernTheme())
+REGISTRY.add(NordicGlintTheme())
+REGISTRY.add(MatrixTerminalTheme())
+REGISTRY.add(ZenGardenTheme())
+REGISTRY.add(VectorTacticalTheme())
+
 

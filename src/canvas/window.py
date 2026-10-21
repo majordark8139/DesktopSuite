@@ -278,32 +278,38 @@ class DesktopCanvasWindow(Gtk.Window):
         if ccfg.get("clock_enabled", True):
             clock_cfg = {**ccfg, "scale": clock_scale}
             pos = self._drag.components.get("clock", {"x": 468, "y": 260})
-            clk_w = int(430.0 * clock_scale)
-            clk_h = int(100.0 * clock_scale)
+            base_clk_w = float(getattr(self._theme, "clock_base_width", 430.0))
+            base_clk_h = float(getattr(self._theme, "clock_base_height", 100.0))
+            clk_w = int(base_clk_w * clock_scale)
+            clk_h = int(base_clk_h * clock_scale)
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
             self._theme.draw_clock(ctx, clk_w, clk_h, clock_cfg, self._time_data)
             ctx.restore()
-            self._drag.update_bbox("clock", 430.0 * clock_scale, 100.0 * clock_scale)
+            self._drag.update_bbox("clock", float(clk_w), float(clk_h))
 
         # 4 — Date.
         if ccfg.get("date_enabled", True):
             date_cfg = {**ccfg, "scale": date_scale}
             pos = self._drag.components.get("date", {"x": 468, "y": 370})
-            dt_w = int(430.0 * date_scale)
-            dt_h = int(95.0 * date_scale)
+            base_dt_w = float(getattr(self._theme, "date_base_width", 430.0))
+            base_dt_h = float(getattr(self._theme, "date_base_height", 95.0))
+            dt_w = int(base_dt_w * date_scale)
+            dt_h = int(base_dt_h * date_scale)
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
             self._theme.draw_date(ctx, dt_w, dt_h, date_cfg, self._time_data)
             ctx.restore()
-            self._drag.update_bbox("date", 430.0 * date_scale, 95.0 * date_scale)
+            self._drag.update_bbox("date", float(dt_w), float(dt_h))
 
         # 5 — Visualizer.
         if ccfg.get("visualizer_enabled", True) and self._audio is not None:
             vis_cfg = {**ccfg, "scale": vis_scale}
             pos = self._drag.components.get("visualizer", {"x": 468, "y": 410})
-            vis_w = int(430.0 * vis_scale)
-            vis_h = self._get_visualizer_height(vis_scale)
+            base_vis_w = float(getattr(self._theme, "vis_base_width", 430.0))
+            base_vis_h = getattr(self._theme, "vis_base_height", None)
+            vis_w = int(base_vis_w * vis_scale)
+            vis_h = int(float(base_vis_h) * vis_scale) if base_vis_h is not None else self._get_visualizer_height(vis_scale)
 
             ctx.save()
             ctx.translate(pos["x"], pos["y"])
@@ -316,7 +322,7 @@ class DesktopCanvasWindow(Gtk.Window):
             ctx.restore()
 
             # Update bounding box so DragController hit-testing is accurate.
-            self._drag.update_bbox("visualizer", 430.0 * vis_scale, float(vis_h))
+            self._drag.update_bbox("visualizer", float(vis_w), float(vis_h))
 
         # 6 — Edit-mode overlay.
         self._drag.draw_overlay(ctx)
