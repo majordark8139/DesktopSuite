@@ -251,13 +251,14 @@ class AppController:
 
     def __init__(self) -> None:
         from src.core.config    import ConfigManager
-        from src.core.autostart import AutostartManager
+        from src.core.autostart import AutostartManager, XfceShortcutManager
         from src.wallpaper.engine import WallpaperEngine
         from src.canvas.audio   import AudioStream
         from src.themes.registry import REGISTRY
 
         self.cfg        = ConfigManager()
         self.autostart  = AutostartManager()
+        self.shortcuts  = XfceShortcutManager()
         self.engine     = WallpaperEngine()
         self.audio      = AudioStream(
             intensity=float(self.cfg.get("canvas.visualizer_intensity") or 0.65)
@@ -330,6 +331,10 @@ class AppController:
         """Push latest config into the live canvas without recreating it."""
         if self._canvas:
             self._canvas.reload_config()
+
+    def redraw_canvas(self) -> None:
+        """Alias for reload_canvas to immediately repaint canvas."""
+        self.reload_canvas()
 
     def start_all(self) -> None:
         """Boot sequence: start canvas then wallpaper."""
@@ -511,6 +516,38 @@ class WallpaperTab(Gtk.Box):
 
         vbox.pack_start(beh_card, False, False, 0)
 
+        # ── Keyboard Shortcut ──────────────────────────────────────────
+        vbox.pack_start(self._section("Keyboard Shortcut"), False, False, 8)
+        sc_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        sc_card.get_style_context().add_class("card")
+
+        sc_desc = Gtk.Label(
+            label="Global XFCE keyboard shortcut to toggle live wallpaper playback.",
+            xalign=0,
+        )
+        sc_card.pack_start(sc_desc, False, False, 0)
+
+        sc_row = Gtk.Box(spacing=8)
+        self._shortcut_entry = Gtk.Entry()
+        curr_sc = self._ctrl.shortcuts.get_current_shortcut() or "<Super>w"
+        self._shortcut_entry.set_text(curr_sc)
+        self._shortcut_entry.set_hexpand(True)
+        sc_row.pack_start(self._shortcut_entry, True, True, 0)
+
+        self._btn_bind_sc = self._btn("Bind Shortcut", "btn-primary", self._on_bind_shortcut)
+        self._btn_remove_sc = self._btn("Remove Shortcut", "btn-danger", self._on_remove_shortcut)
+        sc_row.pack_start(self._btn_bind_sc, False, False, 0)
+        sc_row.pack_start(self._btn_remove_sc, False, False, 0)
+        sc_card.pack_start(sc_row, False, False, 0)
+
+        bound_sc = self._ctrl.shortcuts.get_current_shortcut()
+        status_text = f"Currently bound in XFCE: {bound_sc}" if bound_sc else "No hotkey currently bound in XFCE"
+        self._sc_status_lbl = Gtk.Label(label=status_text, xalign=0)
+        self._sc_status_lbl.get_style_context().add_class("section-label")
+        sc_card.pack_start(self._sc_status_lbl, False, False, 0)
+
+        vbox.pack_start(sc_card, False, False, 0)
+
         # ── Autostart ─────────────────────────────────────────────────
         vbox.pack_start(self._section("System"), False, False, 8)
         sys_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -663,6 +700,27 @@ class WallpaperTab(Gtk.Box):
         self._cfg.set("wallpaper.autostart", chk.get_active())
         self._cfg.save()
 
+    def _on_bind_shortcut(self, _btn) -> None:
+        text = self._shortcut_entry.get_text().strip()
+        if not text:
+            return
+        ok = self._ctrl.shortcuts.bind_shortcut(text)
+        if ok:
+            canon = self._ctrl.shortcuts.normalize_shortcut(text)
+            self._shortcut_entry.set_text(canon)
+            self._cfg.set("wallpaper.shortcut", canon)
+            self._cfg.save()
+            self._sc_status_lbl.set_text(f"Currently bound in XFCE: {canon}")
+        else:
+            self._sc_status_lbl.set_text("Failed to bind shortcut via xfconf")
+
+    def _on_remove_shortcut(self, _btn) -> None:
+        ok = self._ctrl.shortcuts.remove_shortcut()
+        if ok:
+            self._cfg.set("wallpaper.shortcut", "")
+            self._cfg.save()
+            self._sc_status_lbl.set_text("No hotkey currently bound in XFCE")
+
 
 # ===========================================================================
 # Tab 2 — Clock & Canvas Studio
@@ -733,25 +791,35 @@ class CanvasTab(Gtk.Box):
         app_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         app_card.get_style_context().add_class("card")
 
-        # Primary color
-        primary_hex = self._cfg.get("canvas.primary_color") or "#FFFFFF"
-        self._primary_btn = Gtk.ColorButton()
-        self._primary_btn.set_use_alpha(False)
-        rgba_p = Gdk.RGBA()
-        rgba_p.parse(primary_hex)
-        self._primary_btn.set_rgba(rgba_p)
-        self._primary_btn.connect("color-set", self._on_primary_color)
-        app_card.pack_start(self._labeled("Primary Color:", self._primary_btn), False, False, 0)
+        # Clock Color
+        clock_hex = self._cfg.get("canvas.clock_color") or "#FFFFFF"
+        self._clock_color_btn = Gtk.ColorButton()
+        self._clock_color_btn.set_use_alpha(False)
+        rgba_clk = Gdk.RGBA()
+        rgba_clk.parse(clock_hex)
+        self._clock_color_btn.set_rgba(rgba_clk)
+        self._clock_color_btn.connect("color-set", self._on_clock_color)
+        app_card.pack_start(self._labeled("Clock Color:", self._clock_color_btn), False, False, 0)
 
-        # Accent color
-        accent_hex = self._cfg.get("canvas.accent_color") or "#4ade80"
-        self._accent_btn = Gtk.ColorButton()
-        self._accent_btn.set_use_alpha(False)
-        rgba_a = Gdk.RGBA()
-        rgba_a.parse(accent_hex)
-        self._accent_btn.set_rgba(rgba_a)
-        self._accent_btn.connect("color-set", self._on_accent_color)
-        app_card.pack_start(self._labeled("Accent Color:", self._accent_btn), False, False, 0)
+        # Date Color
+        date_hex = self._cfg.get("canvas.date_color") or "#D0D0D0"
+        self._date_color_btn = Gtk.ColorButton()
+        self._date_color_btn.set_use_alpha(False)
+        rgba_dt = Gdk.RGBA()
+        rgba_dt.parse(date_hex)
+        self._date_color_btn.set_rgba(rgba_dt)
+        self._date_color_btn.connect("color-set", self._on_date_color)
+        app_card.pack_start(self._labeled("Date Color:", self._date_color_btn), False, False, 0)
+
+        # Visualizer Color
+        vis_hex = self._cfg.get("canvas.visualizer_color") or "#FFFFFF"
+        self._vis_color_btn = Gtk.ColorButton()
+        self._vis_color_btn.set_use_alpha(False)
+        rgba_vis = Gdk.RGBA()
+        rgba_vis.parse(vis_hex)
+        self._vis_color_btn.set_rgba(rgba_vis)
+        self._vis_color_btn.connect("color-set", self._on_vis_color)
+        app_card.pack_start(self._labeled("Visualizer Color:", self._vis_color_btn), False, False, 0)
 
         # Background opacity slider
         opacity = float(self._cfg.get("canvas.background_opacity") or 0.0)
@@ -844,41 +912,51 @@ class CanvasTab(Gtk.Box):
         self._cfg.set(f"canvas.{key}", chk.get_active())
         if not self._building:
             self._cfg.save()
-            self._ctrl.reload_canvas()
+            self._ctrl.redraw_canvas()
 
-    def _on_primary_color(self, btn: Gtk.ColorButton) -> None:
+    def _on_clock_color(self, btn: Gtk.ColorButton) -> None:
         rgba = btn.get_rgba()
         hex_c = "#{:02X}{:02X}{:02X}".format(
             int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255)
         )
-        self._cfg.set("canvas.primary_color", hex_c)
+        self._cfg.set("canvas.clock_color", hex_c)
         if not self._building:
             self._cfg.save()
-            self._ctrl.reload_canvas()
+            self._ctrl.redraw_canvas()
 
-    def _on_accent_color(self, btn: Gtk.ColorButton) -> None:
+    def _on_date_color(self, btn: Gtk.ColorButton) -> None:
         rgba = btn.get_rgba()
         hex_c = "#{:02X}{:02X}{:02X}".format(
             int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255)
         )
-        self._cfg.set("canvas.accent_color", hex_c)
+        self._cfg.set("canvas.date_color", hex_c)
         if not self._building:
             self._cfg.save()
-            self._ctrl.reload_canvas()
+            self._ctrl.redraw_canvas()
+
+    def _on_vis_color(self, btn: Gtk.ColorButton) -> None:
+        rgba = btn.get_rgba()
+        hex_c = "#{:02X}{:02X}{:02X}".format(
+            int(rgba.red * 255), int(rgba.green * 255), int(rgba.blue * 255)
+        )
+        self._cfg.set("canvas.visualizer_color", hex_c)
+        if not self._building:
+            self._cfg.save()
+            self._ctrl.redraw_canvas()
 
     def _on_opacity(self, scale: Gtk.Scale) -> None:
         val = round(scale.get_value(), 2)
         self._cfg.set("canvas.background_opacity", val)
         if not self._building:
             self._cfg.save()
-            self._ctrl.reload_canvas()
+            self._ctrl.redraw_canvas()
 
     def _on_scale(self, scale: Gtk.Scale) -> None:
         val = round(scale.get_value(), 2)
         self._cfg.set("canvas.scale", val)
         if not self._building:
             self._cfg.save()
-            self._ctrl.reload_canvas()
+            self._ctrl.redraw_canvas()
 
     def _on_vis_intensity(self, scale: Gtk.Scale) -> None:
         val = round(scale.get_value(), 2)
@@ -886,7 +964,7 @@ class CanvasTab(Gtk.Box):
         if not self._building:
             self._cfg.save()
             self._ctrl.audio.set_intensity(val)
-            self._ctrl.reload_canvas()
+            self._ctrl.redraw_canvas()
 
     def _on_drag_toggle(self, btn: Gtk.ToggleButton) -> None:
         active = btn.get_active()

@@ -212,7 +212,7 @@ class OriginalCursiveTheme(BaseTheme):
         with cursive day name in Great Vibes 44pt centered on top with drop shadow.
         Scale is applied to font sizes and layout metrics.
         """
-        color = cfg.get("clock_color") or cfg.get("primary_color", "#FFFFFF")
+        color = cfg.get("clock_color", "#FFFFFF")
         scale = float(cfg.get("scale", 1.0) or 1.0)
         t_sz = self.cache["time_font_size"] * scale
         s_sz = self.cache["script_font_size"] * scale
@@ -338,7 +338,7 @@ class OriginalCursiveTheme(BaseTheme):
         ctx.set_line_width(bar_w)
 
         # Spectrum color: visualizer_color
-        vis_color = cfg.get("visualizer_color") or cfg.get("primary_color", "#FFFFFF")
+        vis_color = cfg.get("visualizer_color", "#FFFFFF")
         self.set_hex_color(ctx, vis_color, alpha=0.82)
 
         # Intensity ratio relative to reference 0.65
@@ -429,7 +429,7 @@ class MondCleanTheme(BaseTheme):
         """
         scale  = float(cfg.get("scale", 1.0) or 1.0)
         font   = cfg.get("font_family", "Sans")
-        color  = cfg.get("clock_color") or cfg.get("primary_color", "#FFFFFF")
+        color  = cfg.get("clock_color", "#FFFFFF")
         size   = self.cache["clock_font_size"] * scale
 
         ctx.select_font_face(font, cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
@@ -467,7 +467,7 @@ class MondCleanTheme(BaseTheme):
         scale = float(cfg.get("scale", 1.0) or 1.0)
         font  = cfg.get("font_family", "Sans")
         size  = self.cache["date_font_size"] * scale
-        color = cfg.get("date_color", "#CCCCCC")
+        color = cfg.get("date_color", "#D0D0D0")
 
         ctx.select_font_face(font, cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(size)
@@ -520,7 +520,7 @@ class MondCleanTheme(BaseTheme):
         ctx.set_line_cap(cairo.LINE_CAP_ROUND)
         ctx.set_line_width(bar_w)
 
-        vis_color = cfg.get("visualizer_color") or cfg.get("primary_color", "#FFFFFF")
+        vis_color = cfg.get("visualizer_color", "#FFFFFF")
         self.set_hex_color(ctx, vis_color, alpha=0.82)
 
         intensity_mult = intensity / 0.65
@@ -537,10 +537,25 @@ class MondCleanTheme(BaseTheme):
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton registry — pre-populated with Original Cursive & Mond Clean
+# Module-level singleton registry — pre-populated with built-in & community themes
 # ---------------------------------------------------------------------------
+
+from .collection import (
+    MondMinimalTheme,
+    EleganceTwoToneTheme,
+    SonderAxisTheme,
+    WildYouthTheme,
+    ChronoBlockTheme,
+    VerticalOverlapTheme,
+)
 
 REGISTRY = ThemeRegistry()
 REGISTRY.add(OriginalCursiveTheme())
 REGISTRY.add(MondCleanTheme())
+REGISTRY.add(MondMinimalTheme())
+REGISTRY.add(EleganceTwoToneTheme())
+REGISTRY.add(SonderAxisTheme())
+REGISTRY.add(WildYouthTheme())
+REGISTRY.add(ChronoBlockTheme())
+REGISTRY.add(VerticalOverlapTheme())
 
