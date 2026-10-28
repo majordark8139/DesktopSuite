@@ -37,20 +37,6 @@
 * **Notice:** DesktopSuite has been developed and tested **exclusively on Linux Mint 21.3 XFCE under X11**. Support for Wayland sessions, alternate desktop environments (GNOME, KDE Plasma), or standalone tiling window managers (i3, bspwm, Hyprland) is currently untested and out of initial scope. Community testing and PRs are welcome.
 
 ---
-
-## ⚡ Real-World Performance Benchmarks
-
-DesktopSuite was built and tested from day one to deliver silky smooth desktop animations while preserving hardware resources on entry-level and older laptops:
-
-| Metric | Measured Value |
-| :--- | :--- |
-| **Hardware** | Intel Core i3-4005U (2C/4T @ 1.70 GHz, Haswell), 4 GB DDR3 RAM |
-| **Graphics** | Intel HD Graphics 4400 (VA-API hardware acceleration) |
-| **Total RAM Footprint** | ~200 MB (unified GTK3/Cairo overlay + MPV video stream + PulseAudio listener) |
-| **CPU Utilization** | 3% – 4% during active 1080p video playback and real-time audio FFT visualization |
-
----
-
 ## 🛠️ Core Features (By Studio Tab)
 
 ### 1. Live Wallpaper Engine
@@ -88,6 +74,33 @@ DesktopSuite was built and tested from day one to deliver silky smooth desktop a
 > [!IMPORTANT]
 > **Desktop Icons & X11 Architecture Note:**
 > Under the X11 windowing system and `xfdesktop`, the hardware-accelerated video stream (`xwinwrap` + `mpv`) sits immediately above the root desktop wallpaper window, visually covering static desktop file icons while video playback is active. All DesktopSuite clock, date, and visualizer widgets remain fully interactive and visible above the video stream. When live video playback is stopped, desktop icons are immediately uncovered and accessible.
+
+---
+
+## 📊 Performance & Real-World Benchmarks
+
+### Testbed Specifications
+- **CPU:** Intel Core i3-4005U (2C/4T @ 1.70 GHz, Haswell)
+- **RAM:** 4 GB DDR3
+- **Graphics:** Intel HD Graphics 4400 (VA-API enabled)
+- **OS:** Linux Mint 21.3 ("Virginia") XFCE (amd64, X11)
+
+### Real-Time Resource Footprint
+| Component / Process | Resident Memory | CPU Usage | Role |
+| :--- | :--- | :--- | :--- |
+| **`mpv`** | ~131 MB | ~3.9% | Hardware-accelerated root window video decoding |
+| **`python3`** | ~50 MB | ~2.5% | GTK3/Cairo vector canvas & PulseAudio FFT listener |
+| **`xwinwrap`** | < 2 MB | ~0.0% | X11 root desktop embedding wrapper |
+| **Total Suite** | **~197 MB** | **~4.0%** | **Full live wallpaper + canvas pipeline** |
+
+### Hardware Telemetry Capture
+![Hardware Telemetry](assets/benchmarks/telemetry-benchmark.png)
+
+* **Silicon Offloading:** Video decoding is offloaded entirely to the Intel HD 4400's fixed-function MFX/VDBOX engine via VA-API (`--hwdec=vaapi`), registering 23.47% Video engine load in `intel_gpu_top`.
+* **Thermal & Power Efficiency:** The iGPU operates at its baseline idle frequency (372 MHz at 1.44 W package power), keeping the dual-core CPU free for lightweight 2D Cairo drawing and FFT audio math.
+
+### Live Playback & Responsive Canvas
+![Live Playback & Canvas Demo](assets/benchmarks/live-benchmark.gif)
 
 ---
 
