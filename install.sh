@@ -7,6 +7,24 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "=== Installing DesktopSuite ==="
 echo "Project Directory: ${PROJECT_DIR}"
 
+# APT package dependencies for Debian / Ubuntu / Linux Mint:
+# sudo apt install -y python3 python3-pip python3-gi python3-cairo python3-numpy \
+#                     gir1.2-gtk-3.0 mpv libfontconfig1 fontconfig
+APT_DEPS="python3 python3-pip python3-gi python3-cairo python3-numpy gir1.2-gtk-3.0 mpv libfontconfig1 fontconfig"
+
+# Optional pre-check for required Python dependencies
+MISSING_DEPS=()
+for mod in gi cairo numpy; do
+    if ! python3 -c "import $mod" >/dev/null 2>&1; then
+        MISSING_DEPS+=("python3-$mod")
+    fi
+done
+
+if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+    echo "[!] Note: Missing Python packages: ${MISSING_DEPS[*]}"
+    echo "    Install with: sudo apt install -y python3-gi python3-cairo python3-numpy"
+fi
+
 # 1. Ensure user directories exist
 BIN_DIR="${HOME}/.local/bin"
 APPS_DIR="${HOME}/.local/share/applications"
@@ -23,6 +41,11 @@ cat <<EOF > "${LAUNCHER}"
 exec python3 "${PROJECT_DIR}/src/main.py" "\$@"
 EOF
 chmod +x "${LAUNCHER}"
+
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+fi
+echo "Verified ~/.local/bin in PATH"
 
 # 3. Install application icon
 echo "[2/5] Installing application icon to ${ICONS_DIR}/desktop-suite.png..."

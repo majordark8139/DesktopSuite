@@ -158,7 +158,7 @@
 ### 1. Prerequisites (Ubuntu / Debian / Linux Mint)
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip python3-gi python3-gi-cairo \
+sudo apt install -y python3 python3-pip python3-gi python3-cairo python3-numpy \
                     gir1.2-gtk-3.0 mpv libfontconfig1 fontconfig
 ```
 
