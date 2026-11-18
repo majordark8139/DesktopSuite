@@ -225,10 +225,19 @@ class WinWallpaperEngine:
     @staticmethod
     def find_mpv() -> Optional[str]:
         """Locate mpv executable in assets/bin, PATH, or common install locations."""
-        proj_root = Path(__file__).resolve().parent.parent.parent
-        bundled = proj_root / "assets" / "bin" / "mpv.exe"
-        if bundled.is_file():
-            return str(bundled)
+        candidates = []
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            candidates.append(exe_dir / "assets" / "bin" / "mpv.exe")
+            candidates.append(exe_dir / "_internal" / "assets" / "bin" / "mpv.exe")
+            if hasattr(sys, "_MEIPASS"):
+                candidates.append(Path(sys._MEIPASS) / "assets" / "bin" / "mpv.exe")
+        candidates.append(Path(__file__).resolve().parent.parent.parent / "assets" / "bin" / "mpv.exe")
+        candidates.append(Path.cwd() / "assets" / "bin" / "mpv.exe")
+
+        for c in candidates:
+            if c.is_file():
+                return str(c)
 
         which = shutil.which("mpv") or shutil.which("mpv.exe")
         if which:

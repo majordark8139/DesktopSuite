@@ -866,6 +866,12 @@ class ControlCenterWindow(QMainWindow):
             self.lbl_status.setStyleSheet("background-color: #45475a; border-radius: 8px; padding: 3px 10px; color: #cdd6f4; font-weight: bold;")
 
     def _on_start(self) -> None:
+        cur_video = self.cfg.get("wallpaper.video_path") or ""
+        if not cur_video or not Path(cur_video).is_file():
+            self._on_browse()
+            cur_video = self.cfg.get("wallpaper.video_path") or ""
+            if not cur_video or not Path(cur_video).is_file():
+                return
         self.ctrl.start_wallpaper()
         self._update_engine_status()
 
@@ -876,6 +882,11 @@ class ControlCenterWindow(QMainWindow):
     def _on_kill(self) -> None:
         """Emergency kill wallpaper engine and stop any background mpv processes."""
         self.ctrl.stop_wallpaper()
+        try:
+            import subprocess
+            subprocess.run(["taskkill", "/F", "/IM", "mpv.exe"], capture_output=True, check=False)
+        except Exception:
+            pass
         self._update_engine_status()
         log.info("Killed wallpaper playback process")
 

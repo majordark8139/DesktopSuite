@@ -72,6 +72,21 @@ class WinAppController:
         wp = self.cfg.get("wallpaper") or {}
         path = wp.get("video_path", "")
         if not path or not Path(path).is_file():
+            candidates = []
+            if getattr(sys, "frozen", False):
+                exe_dir = Path(sys.executable).resolve().parent
+                candidates.append(exe_dir / "assets" / "screenshots" / "00-hero-demo.mp4")
+                candidates.append(exe_dir / "_internal" / "assets" / "screenshots" / "00-hero-demo.mp4")
+            candidates.append(Path(__file__).resolve().parent.parent.parent / "assets" / "screenshots" / "00-hero-demo.mp4")
+            candidates.append(Path.cwd() / "assets" / "screenshots" / "00-hero-demo.mp4")
+            for c in candidates:
+                if c.is_file():
+                    path = str(c.resolve())
+                    self.cfg.set("wallpaper.video_path", path)
+                    self.cfg.save()
+                    break
+
+        if not path or not Path(path).is_file():
             log.warning("start_wallpaper: no valid video_path in config")
             return False
 
