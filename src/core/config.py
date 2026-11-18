@@ -23,11 +23,18 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+import sys
+
 # ---------------------------------------------------------------------------
 # Filesystem locations
 # ---------------------------------------------------------------------------
 
-CONFIG_DIR: Path = Path.home() / ".config" / "desktop-suite"
+if sys.platform == "win32":
+    _appdata = os.environ.get("APPDATA")
+    CONFIG_DIR: Path = Path(_appdata) / "desktop-suite" if _appdata else Path.home() / ".config" / "desktop-suite"
+else:
+    CONFIG_DIR: Path = Path.home() / ".config" / "desktop-suite"
+
 CONFIG_FILE: Path = CONFIG_DIR / "config.json"
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 # DesktopSuite
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://python.org)
-[![Platform: Linux](https://img.shields.io/badge/Platform-Linux%20(X11)-orange.svg)]()
-[![GTK: 3.0](https://img.shields.io/badge/GTK-3.0-green.svg)]()
+[![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
+[![Platform: Linux & Windows](https://img.shields.io/badge/Platform-Linux%20%7C%20Windows%207%2B-brightgreen.svg)]()
+[![Build & Package](https://github.com/majordark8139/desktopsuite/actions/workflows/build.yml/badge.svg)](https://github.com/majordark8139/desktopsuite/actions/workflows/build.yml)
 
-> **DesktopSuite** is an elegant, modular Desktop Widget & Live Wallpaper Engine for Linux. Featuring 26 iconic community-inspired Rainmeter themes, independent component drag-and-scale mechanics, decoupled RGB color customizers, real-time audio visualization, and a seamless video wallpaper engine.
+> **DesktopSuite** is an elegant, modular Desktop Widget & Live Wallpaper Engine for Linux and Windows. Featuring 26 iconic community-inspired Rainmeter themes, independent component drag-and-scale mechanics, decoupled RGB color customizers, real-time audio visualization, and a seamless video wallpaper engine.
 
 ---
 
@@ -31,10 +31,9 @@
 ---
 
 ### 🖥️ Compatibility & Target Environment
-* **Verified Distribution:** Linux Mint 21.3 ("Virginia") XFCE Edition (amd64)
-* **Display Server:** X11 (`xwinwrap` and low-level Xlib window stacking require an active X11 session)
-* **Window Manager / Desktop:** Xfwm4 / `xfdesktop`
-* **Notice:** DesktopSuite has been developed and tested **exclusively on Linux Mint 21.3 XFCE under X11**. Support for Wayland sessions, alternate desktop environments (GNOME, KDE Plasma), or standalone tiling window managers (i3, bspwm, Hyprland) is currently untested and out of initial scope. Community testing and PRs are welcome.
+* **Linux:** Linux Mint 21.3 ("Virginia") XFCE Edition (amd64, X11) using GTK 3, Cairo, `xwinwrap`, and `mpv`.
+* **Windows (7 / 8 / 10 / 11):** Native Win32 Layered Windows with DWM Aero transparency, WorkerW live wallpaper embedding, and WASAPI audio loopback. See [README_WINDOWS.md](README_WINDOWS.md) for Windows details.
+* **Portable Builds:** Standalone compiled Windows binaries are automatically packaged on every commit via [GitHub Actions Workflows](https://github.com/majordark8139/desktopsuite/actions).
 
 ---
 ## 🛠️ Core Features (By Studio Tab)

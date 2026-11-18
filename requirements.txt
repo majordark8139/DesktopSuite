@@ -1,4 +1,6 @@
-# DesktopSuite Python Dependencies
+# DesktopSuite Dependencies
 pycairo>=1.20.0
 numpy>=1.20.0
-PyGObject>=3.40.0
+PyGObject>=3.40.0; sys_platform != 'win32'
+PyQt5>=5.15.0; sys_platform == 'win32'
+soundcard>=0.4.0; sys_platform == 'win32'

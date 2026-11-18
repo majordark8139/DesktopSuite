@@ -60,9 +60,59 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 # ---------------------------------------------------------------------------
-# Fast-path CLI handlers (0ms GUI overhead: no GTK import)
+# Fast-path CLI handlers & Platform Dispatcher
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        if "--kill-wallpaper" in sys.argv:
+            from src.wallpaper.win_engine import WinWallpaperEngine
+            WinWallpaperEngine().stop()
+            print("[Desktop Suite] Live wallpaper killed.")
+            sys.exit(0)
+
+        if "--toggle-wallpaper" in sys.argv:
+            from src.wallpaper.win_engine import WinMpvIPC, WinWallpaperEngine
+            ipc = WinMpvIPC()
+            if ipc.is_alive():
+                res = ipc.send_command(["get_property", "pause"])
+                if res and "data" in res:
+                    if res["data"] is True:
+                        ipc.resume()
+                        print("[Desktop Suite] Wallpaper resumed.")
+                    else:
+                        ipc.pause()
+                        print("[Desktop Suite] Wallpaper paused.")
+            else:
+                from src.core.config import ConfigManager
+                cfg = ConfigManager()
+                wp = cfg.get("wallpaper") or {}
+                path = wp.get("video_path", "")
+                if path and Path(path).is_file():
+                    engine = WinWallpaperEngine()
+                    started = engine.start(
+                        video_path=path,
+                        speed=float(wp.get("playback_speed", 1.0)),
+                        volume=int(wp.get("volume", 50)),
+                        mute=bool(wp.get("mute", True)),
+                        fit_mode=wp.get("fit_mode", "fill"),
+                        fps_limit=wp.get("fps_limit", "native"),
+                        autopause=wp.get("autopause", "focus"),
+                    )
+                    if started:
+                        print(f"[Desktop Suite] Wallpaper started ({path}).")
+                    else:
+                        print("[Desktop Suite] Failed to start wallpaper engine.")
+                else:
+                    print("[Desktop Suite] Cannot start wallpaper: no valid video_path configured.")
+            sys.exit(0)
+
+        # Launch Windows Native DesktopSuite
+        from src.windows import run_windows
+        is_daemon = "--daemon" in sys.argv or "--start-all" in sys.argv
+        run_windows(daemon=is_daemon)
+        sys.exit(0)
+
+    # Linux Fast-Path Handlers
     if "--kill-wallpaper" in sys.argv:
         from src.wallpaper.engine import WallpaperEngine
         engine = WallpaperEngine()
