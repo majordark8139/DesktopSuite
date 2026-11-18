@@ -112,7 +112,7 @@ DEFAULTS: dict[str, Any] = {
 
         # Name of the active visual theme (corresponds to a key in
         # src/themes/).
-        "active_theme": "Original Cursive",
+        "active_theme": "Mond Minimal",
 
         # Decoupled component colours (hex strings).
         "clock_color": "#FFFFFF",

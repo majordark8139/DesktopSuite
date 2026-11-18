@@ -3,10 +3,13 @@ src.windows.control_center
 ==========================
 Comprehensive PyQt5 Control Center GUI for DesktopSuite on Windows.
 Replicates the full feature set and dark Catppuccin theme styling of the Linux GUI.
+Includes global Windows hotkey integration (RegisterHotKey / WM_HOTKEY) for live wallpaper toggling/killing.
 """
 
 from __future__ import annotations
 
+import ctypes
+from ctypes import wintypes
 import logging
 import os
 import sys
@@ -19,12 +22,30 @@ from PyQt5.QtWidgets import (
     QComboBox, QFileDialog, QColorDialog, QScrollArea, QFrame
 )
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QFont, QIcon, QPixmap
+from PyQt5.QtGui import QColor, QFont, QIcon, QPixmap, QPalette
 
 log = logging.getLogger(__name__)
 
+# Win32 Hotkey Modifiers
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000
+WM_HOTKEY = 0x0312
+
+HOTKEY_PRESETS = {
+    "Win + W (Default)": (MOD_WIN | MOD_NOREPEAT, ord('W')),
+    "Ctrl + Alt + W": (MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord('W')),
+    "Ctrl + Shift + W": (MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, ord('W')),
+    "Alt + W": (MOD_ALT | MOD_NOREPEAT, ord('W')),
+    "F12": (MOD_NOREPEAT, 0x7B),  # VK_F12
+    "Disabled": None,
+}
+
 _WIN_DARK_QSS = """
-QMainWindow, QWidget#CentralWidget {
+QMainWindow, QWidget#CentralWidget, QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget,
+QWidget#tab_wp, QWidget#tab_cv, QWidget#content_wp, QWidget#content_cv {
     background-color: #1e1e2e;
     color: #cdd6f4;
     font-family: 'Segoe UI', sans-serif;
@@ -32,11 +53,15 @@ QMainWindow, QWidget#CentralWidget {
 }
 QScrollArea {
     border: none;
-    background-color: #181825;
+    background-color: #1e1e2e;
+}
+QScrollArea > QWidget {
+    background-color: #1e1e2e;
+    border: none;
 }
 QTabWidget::pane {
     border: none;
-    background-color: #181825;
+    background-color: #1e1e2e;
 }
 QTabBar::tab {
     background-color: #181825;
@@ -47,21 +72,21 @@ QTabBar::tab {
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
     margin-right: 4px;
-    min-width: 160px;
+    min-width: 150px;
 }
 QTabBar::tab:selected {
-    background-color: #313244;
-    color: #cdd6f4;
+    background-color: #1e1e2e;
+    color: #89b4fa;
     border-bottom: 3px solid #89b4fa;
 }
 QGroupBox {
-    background-color: #313244;
+    background-color: #252839;
     border-radius: 8px;
     margin-top: 18px;
     padding: 14px;
     font-weight: bold;
     color: #89b4fa;
-    border: 1px solid #45475a;
+    border: 1px solid #363a4f;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -69,21 +94,24 @@ QGroupBox::title {
     padding: 0 8px;
     color: #89b4fa;
     font-size: 12px;
+    font-weight: bold;
 }
 QPushButton {
-    background-color: #45475a;
+    background-color: #313244;
     color: #cdd6f4;
     border-radius: 6px;
     padding: 7px 16px;
     font-weight: bold;
-    border: none;
+    border: 1px solid #45475a;
 }
 QPushButton:hover {
-    background-color: #585b70;
+    background-color: #45475a;
+    border-color: #585b70;
 }
 QPushButton#btn-primary {
     background-color: #89b4fa;
     color: #1e1e2e;
+    border: none;
 }
 QPushButton#btn-primary:hover {
     background-color: #b4befe;
@@ -91,13 +119,24 @@ QPushButton#btn-primary:hover {
 QPushButton#btn-danger {
     background-color: #f38ba8;
     color: #1e1e2e;
+    border: none;
 }
 QPushButton#btn-danger:hover {
     background-color: #f5c2e7;
 }
+QPushButton#btn-kill {
+    background-color: #e53935;
+    color: #ffffff;
+    font-weight: bold;
+    border: none;
+}
+QPushButton#btn-kill:hover {
+    background-color: #ef5350;
+}
 QPushButton#btn-warning {
     background-color: #fab387;
     color: #1e1e2e;
+    border: none;
 }
 QPushButton#btn-warning:hover {
     background-color: #f9e2af;
@@ -107,6 +146,7 @@ QPushButton#btn-unlock {
     color: #ffffff;
     font-size: 13px;
     padding: 9px 18px;
+    border: none;
 }
 QPushButton#btn-unlock:hover {
     background-color: #00bcd4;
@@ -116,13 +156,14 @@ QPushButton#btn-lock {
     color: #ffffff;
     font-size: 13px;
     padding: 9px 18px;
+    border: none;
 }
 QPushButton#btn-lock:hover {
     background-color: #ef5350;
 }
 QSlider::groove:horizontal {
     height: 6px;
-    background-color: #45475a;
+    background-color: #313244;
     border-radius: 3px;
 }
 QSlider::sub-page:horizontal {
@@ -140,19 +181,23 @@ QSlider::handle:horizontal:hover {
     background-color: #89b4fa;
 }
 QComboBox {
-    background-color: #45475a;
+    background-color: #313244;
     color: #cdd6f4;
     border-radius: 6px;
     padding: 5px 12px;
-    border: 1px solid #585b70;
+    border: 1px solid #45475a;
     min-height: 24px;
 }
+QComboBox:hover {
+    border-color: #89b4fa;
+}
 QComboBox QAbstractItemView {
-    background-color: #313244;
+    background-color: #252839;
     color: #cdd6f4;
     selection-background-color: #89b4fa;
     selection-color: #1e1e2e;
     padding: 4px;
+    border: 1px solid #45475a;
 }
 QCheckBox {
     color: #cdd6f4;
@@ -163,8 +208,8 @@ QCheckBox::indicator {
     width: 16px;
     height: 16px;
     border-radius: 4px;
-    background-color: #45475a;
-    border: 1px solid #585b70;
+    background-color: #313244;
+    border: 1px solid #45475a;
 }
 QCheckBox::indicator:checked {
     background-color: #89b4fa;
@@ -189,15 +234,18 @@ class ControlCenterWindow(QMainWindow):
     Full-featured Control Center GUI for DesktopSuite on Windows.
     """
 
+    HOTKEY_ID = 1001
+
     def __init__(self, controller: Any) -> None:
         super().__init__()
         self.ctrl = controller
         self.cfg = controller.cfg
         self._building = True
+        self._current_hotkey = self.cfg.get("wallpaper.shortcut", "Win + W (Default)")
 
-        self.setWindowTitle("DesktopSuite Control Center")
-        self.resize(640, 760)
-        self.setMinimumSize(560, 640)
+        self.setWindowTitle("Desktop Suite Control Center")
+        self.resize(660, 780)
+        self.setMinimumSize(580, 660)
         self.setStyleSheet(_WIN_DARK_QSS)
 
         central = QWidget(self)
@@ -211,9 +259,13 @@ class ControlCenterWindow(QMainWindow):
 
         # Tab 1: Live Wallpaper
         tab_wp = QWidget()
+        tab_wp.setObjectName("tab_wp")
         scroll_wp = QScrollArea()
+        scroll_wp.setObjectName("scroll_wp")
         scroll_wp.setWidgetResizable(True)
+        scroll_wp.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
         content_wp = QWidget()
+        content_wp.setObjectName("content_wp")
         layout_wp = QVBoxLayout(content_wp)
         layout_wp.setSpacing(12)
         layout_wp.setContentsMargins(12, 12, 12, 12)
@@ -222,13 +274,17 @@ class ControlCenterWindow(QMainWindow):
         layout_tab_wp = QVBoxLayout(tab_wp)
         layout_tab_wp.setContentsMargins(0, 0, 0, 0)
         layout_tab_wp.addWidget(scroll_wp)
-        tabs.addTab(tab_wp, "Live Wallpaper")
+        tabs.addTab(tab_wp, "🎬 Live Wallpaper")
 
-        # Tab 2: Clock & Canvas Studio (use && so '&' is not swallowed as accelerator)
+        # Tab 2: Clock & Canvas Studio
         tab_cv = QWidget()
+        tab_cv.setObjectName("tab_cv")
         scroll_cv = QScrollArea()
+        scroll_cv.setObjectName("scroll_cv")
         scroll_cv.setWidgetResizable(True)
+        scroll_cv.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
         content_cv = QWidget()
+        content_cv.setObjectName("content_cv")
         layout_cv = QVBoxLayout(content_cv)
         layout_cv.setSpacing(12)
         layout_cv.setContentsMargins(12, 12, 12, 12)
@@ -237,10 +293,80 @@ class ControlCenterWindow(QMainWindow):
         layout_tab_cv = QVBoxLayout(tab_cv)
         layout_tab_cv.setContentsMargins(0, 0, 0, 0)
         layout_tab_cv.addWidget(scroll_cv)
-        tabs.addTab(tab_cv, "Clock && Canvas Studio")
+        tabs.addTab(tab_cv, "🕒 Clock && Canvas Studio")
 
         self._building = False
         self._update_engine_status()
+        self._register_global_hotkey(self._current_hotkey)
+
+    # -----------------------------------------------------------------------
+    # Native Event Handling for Global Win32 Hotkey
+    # -----------------------------------------------------------------------
+
+    def nativeEvent(self, eventType, message) -> tuple[bool, int]:
+        if eventType in (b"windows_generic_MSG", "windows_generic_MSG"):
+            try:
+                msg = wintypes.MSG.from_address(int(message))
+                if msg.message == WM_HOTKEY and msg.wParam == self.HOTKEY_ID:
+                    self._on_global_hotkey_triggered()
+                    return True, 0
+            except Exception as exc:
+                log.debug("nativeEvent MSG handling error: %s", exc)
+        return super().nativeEvent(eventType, message)
+
+    def _register_global_hotkey(self, hotkey_name: str) -> bool:
+        """Register the system-wide global hotkey via Win32 RegisterHotKey."""
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            user32.UnregisterHotKey(hwnd, self.HOTKEY_ID)
+
+            if hotkey_name not in HOTKEY_PRESETS or hotkey_name == "Disabled":
+                self.lbl_hk_status.setText("● Hotkey Disabled")
+                self.lbl_hk_status.setStyleSheet("color: #a6adc8; font-weight: normal;")
+                return False
+
+            params = HOTKEY_PRESETS[hotkey_name]
+            if params is None:
+                return False
+
+            mods, vk = params
+            res = user32.RegisterHotKey(hwnd, self.HOTKEY_ID, mods, vk)
+            if res:
+                self._current_hotkey = hotkey_name
+                self.cfg.set("wallpaper.shortcut", hotkey_name)
+                self.cfg.save()
+                self.lbl_hk_status.setText(f"● Hotkey Active: {hotkey_name} (press anywhere in Windows to toggle/kill)")
+                self.lbl_hk_status.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+                log.info("Registered global Windows hotkey: %s", hotkey_name)
+                return True
+            else:
+                self.lbl_hk_status.setText(f"⚠ Could not bind {hotkey_name} (in use by another application)")
+                self.lbl_hk_status.setStyleSheet("color: #fab387; font-weight: bold;")
+                log.warning("Could not register hotkey %s (Win32 error: %s)", hotkey_name, ctypes.GetLastError())
+                return False
+        except Exception as exc:
+            log.warning("RegisterHotKey exception: %s", exc)
+            return False
+
+    def _on_global_hotkey_triggered(self) -> None:
+        """Toggles wallpaper playback or kills active video engine on global shortcut press."""
+        log.info("Global hotkey triggered: %s", self._current_hotkey)
+        if self.ctrl.engine.is_running():
+            self.ctrl.stop_wallpaper()
+            log.info("Global hotkey: Stopped / killed live wallpaper")
+        else:
+            self.ctrl.start_wallpaper()
+            log.info("Global hotkey: Started live wallpaper")
+        self._update_engine_status()
+
+    def closeEvent(self, event) -> None:
+        """Unregister hotkey when window closes."""
+        try:
+            ctypes.windll.user32.UnregisterHotKey(int(self.winId()), self.HOTKEY_ID)
+        except Exception:
+            pass
+        event.accept()
 
     # -----------------------------------------------------------------------
     # Tab 1: Live Wallpaper
@@ -264,16 +390,24 @@ class ControlCenterWindow(QMainWindow):
         btn_start = QPushButton("▶  Start")
         btn_start.setObjectName("btn-primary")
         btn_start.clicked.connect(self._on_start)
+
         btn_stop = QPushButton("■  Stop")
         btn_stop.setObjectName("btn-danger")
         btn_stop.clicked.connect(self._on_stop)
+
+        btn_kill = QPushButton("💀  Kill Wallpaper")
+        btn_kill.setObjectName("btn-kill")
+        btn_kill.setToolTip("Force terminate mpv process immediately")
+        btn_kill.clicked.connect(self._on_kill)
+
         btn_restart = QPushButton("↺  Restart")
         btn_restart.setObjectName("btn-warning")
         btn_restart.clicked.connect(self._on_restart)
+
         btn_pause = QPushButton("⏸  Pause / Resume")
         btn_pause.clicked.connect(self._on_pause)
 
-        for b in (btn_start, btn_stop, btn_restart, btn_pause):
+        for b in (btn_start, btn_stop, btn_kill, btn_restart, btn_pause):
             h_btns.addWidget(b)
         v_eng.addLayout(h_btns)
 
@@ -325,15 +459,49 @@ class ControlCenterWindow(QMainWindow):
         v_pb.addLayout(h_spd)
 
         # Mute
-        chk_mute = QCheckBox("Mute Audio")
+        chk_mute = QCheckBox("Mute Video Audio")
         chk_mute.setChecked(bool(self.cfg.get("wallpaper.mute", True)))
         chk_mute.toggled.connect(self._on_mute_changed)
         v_pb.addWidget(chk_mute)
 
         layout.addWidget(grp_pb)
 
-        # 3. Behaviour & System Integration
-        grp_beh = QGroupBox("Behaviour & System")
+        # 3. Global Hotkey / Shortcut Manager
+        grp_hk = QGroupBox("Keyboard Shortcut && Global Hotkey")
+        v_hk = QVBoxLayout(grp_hk)
+        v_hk.setSpacing(8)
+
+        lbl_hk_desc = QLabel("System-wide hotkey to toggle or kill live wallpaper from any application or game.")
+        lbl_hk_desc.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        v_hk.addWidget(lbl_hk_desc)
+
+        h_hk = QHBoxLayout()
+        h_hk.addWidget(QLabel("Toggle Hotkey:"))
+        self.cb_hotkey = QComboBox()
+        for k in HOTKEY_PRESETS.keys():
+            self.cb_hotkey.addItem(k)
+        cur_hk = self.cfg.get("wallpaper.shortcut") or "Win + W (Default)"
+        if cur_hk in HOTKEY_PRESETS:
+            self.cb_hotkey.setCurrentText(cur_hk)
+        h_hk.addWidget(self.cb_hotkey, 1)
+
+        btn_bind_hk = QPushButton("Bind Hotkey")
+        btn_bind_hk.setObjectName("btn-primary")
+        btn_bind_hk.clicked.connect(lambda: self._register_global_hotkey(self.cb_hotkey.currentText()))
+        btn_remove_hk = QPushButton("Disable")
+        btn_remove_hk.clicked.connect(lambda: (self.cb_hotkey.setCurrentText("Disabled"), self._register_global_hotkey("Disabled")))
+        h_hk.addWidget(btn_bind_hk)
+        h_hk.addWidget(btn_remove_hk)
+        v_hk.addLayout(h_hk)
+
+        self.lbl_hk_status = QLabel("● Initializing global hotkey...")
+        self.lbl_hk_status.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        v_hk.addWidget(self.lbl_hk_status)
+
+        layout.addWidget(grp_hk)
+
+        # 4. Behaviour & System Integration
+        grp_beh = QGroupBox("Behaviour && System")
         v_beh = QVBoxLayout(grp_beh)
         v_beh.setSpacing(10)
 
@@ -359,7 +527,7 @@ class ControlCenterWindow(QMainWindow):
         h_ap.addWidget(cb_ap, 1)
         v_beh.addLayout(h_ap)
 
-        # FPS Limiter (Added feature from Linux)
+        # FPS Limiter
         h_fps = QHBoxLayout()
         h_fps.addWidget(QLabel("FPS Limiter:"))
         cb_fps = QComboBox()
@@ -392,7 +560,7 @@ class ControlCenterWindow(QMainWindow):
         self.cb_theme = QComboBox()
         theme_names = self.ctrl.registry.names()
         self.cb_theme.addItems(theme_names)
-        cur_th = self.cfg.get("canvas.active_theme") or "Original Cursive"
+        cur_th = self.cfg.get("canvas.active_theme") or "Mond Minimal"
         if cur_th in theme_names:
             self.cb_theme.setCurrentText(cur_th)
         self.cb_theme.currentTextChanged.connect(self._on_theme_changed)
@@ -447,7 +615,7 @@ class ControlCenterWindow(QMainWindow):
         layout.addWidget(grp_col)
 
         # 4. Scaling, Opacity & Intensity
-        grp_sc = QGroupBox("Scaling & Appearance")
+        grp_sc = QGroupBox("Scaling && Appearance")
         v_sc = QVBoxLayout(grp_sc)
         v_sc.setSpacing(10)
 
@@ -481,7 +649,7 @@ class ControlCenterWindow(QMainWindow):
 
         # Visualizer Intensity
         h_int = QHBoxLayout()
-        h_int.addWidget(QLabel("Visualizer Intensity:"))
+        h_int.addWidget(QLabel("Vis Intensity:"))
         int_val = float(self.cfg.get("canvas.visualizer_intensity") or 0.65)
         self.lbl_int_val = QLabel(f"{int(int_val * 100)}%")
         self.lbl_int_val.setFixedWidth(45)
@@ -494,7 +662,7 @@ class ControlCenterWindow(QMainWindow):
         v_sc.addLayout(h_int)
 
         # Independent Scales Toggle
-        self.chk_ind = QCheckBox("Independent Component Scaling")
+        self.chk_ind = QCheckBox("Independent Element Scaling")
         self.chk_ind.setChecked(bool(self.cfg.get("canvas.independent_scales", False)))
         self.chk_ind.toggled.connect(self._on_independent_toggled)
         v_sc.addWidget(self.chk_ind)
@@ -553,9 +721,13 @@ class ControlCenterWindow(QMainWindow):
         layout.addWidget(grp_sc)
 
         # 5. Interactive Drag-and-Drop Positioning
-        grp_drag = QGroupBox("Layout & Positioning")
+        grp_drag = QGroupBox("Layout && Positioning")
         v_drag = QVBoxLayout(grp_drag)
         v_drag.setSpacing(10)
+
+        lbl_drag_desc = QLabel("Unlock the canvas to drag Clock, Date, and Visualizer freely on the desktop. Lock to save positions.")
+        lbl_drag_desc.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        v_drag.addWidget(lbl_drag_desc)
 
         h_drag_btns = QHBoxLayout()
         self.btn_drag = QPushButton("🔓  Unlock Drag Mode")
@@ -591,6 +763,12 @@ class ControlCenterWindow(QMainWindow):
     def _on_stop(self) -> None:
         self.ctrl.stop_wallpaper()
         self._update_engine_status()
+
+    def _on_kill(self) -> None:
+        """Emergency kill wallpaper engine and stop any background mpv processes."""
+        self.ctrl.stop_wallpaper()
+        self._update_engine_status()
+        log.info("Killed wallpaper playback process")
 
     def _on_restart(self) -> None:
         self.ctrl.restart_wallpaper()
@@ -700,20 +878,19 @@ class ControlCenterWindow(QMainWindow):
         self._set_canvas_cfg(f"canvas.{elem}_scale", scale)
 
     def _update_color_button(self, btn: QPushButton, hex_col: str, title: str) -> None:
-        # Style button with color swatch and hex text
         btn.setText(f"  {title}:  {hex_col}  ")
         btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #313244;
+                background-color: #252839;
                 color: #cdd6f4;
                 border: 2px solid {hex_col};
                 border-radius: 6px;
-                padding: 6px 12px;
+                padding: 6px 14px;
                 text-align: left;
                 font-weight: bold;
             }}
             QPushButton:hover {{
-                background-color: #45475a;
+                background-color: #313244;
             }}
         """)
 
@@ -728,7 +905,7 @@ class ControlCenterWindow(QMainWindow):
     def _on_toggle_drag(self) -> None:
         editing = self.ctrl.toggle_canvas_edit_mode()
         if editing:
-            self.btn_drag.setText("🔒  Lock Positions")
+            self.btn_drag.setText("🔒  Lock Positions (Save)")
             self.btn_drag.setObjectName("btn-lock")
             self.btn_drag.setStyleSheet("background-color: #e53935; color: white; font-weight: bold; padding: 9px 18px; border-radius: 6px;")
         else:

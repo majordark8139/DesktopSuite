@@ -36,6 +36,21 @@ class WinAppController:
         if self._gui_app is None:
             self._gui_app = QApplication(sys.argv)
 
+        from PyQt5.QtGui import QPalette, QColor
+        pal = QPalette()
+        pal.setColor(QPalette.Window, QColor("#1e1e2e"))
+        pal.setColor(QPalette.WindowText, QColor("#cdd6f4"))
+        pal.setColor(QPalette.Base, QColor("#1e1e2e"))
+        pal.setColor(QPalette.AlternateBase, QColor("#181825"))
+        pal.setColor(QPalette.ToolTipBase, QColor("#1e1e2e"))
+        pal.setColor(QPalette.ToolTipText, QColor("#cdd6f4"))
+        pal.setColor(QPalette.Text, QColor("#cdd6f4"))
+        pal.setColor(QPalette.Button, QColor("#313244"))
+        pal.setColor(QPalette.ButtonText, QColor("#cdd6f4"))
+        pal.setColor(QPalette.Highlight, QColor("#89b4fa"))
+        pal.setColor(QPalette.HighlightedText, QColor("#1e1e2e"))
+        self._gui_app.setPalette(pal)
+
         # 2. Register bundled fonts with Windows GDI
         register_bundled_fonts()
 

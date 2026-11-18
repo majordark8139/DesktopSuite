@@ -231,8 +231,11 @@ class OriginalCursiveTheme(BaseTheme):
         ctx.move_to(tx, ty)
         ctx.show_text(time_data.time_str)
 
-        # 2. Cursive script day: Great Vibes with drop-shadow glow
-        ctx.select_font_face("Great Vibes", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
+        # 2. Cursive script day: Caveat (or Wild Youth) handwriting with drop-shadow glow
+        try:
+            ctx.select_font_face("Caveat", cairo.FontSlant.NORMAL, cairo.FontWeight.BOLD)
+        except Exception:
+            ctx.select_font_face("Wild Youth", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(s_sz)
         d_ext = ctx.text_extents(time_data.day_str)
         dx = cx - d_ext.width / 2.0 - d_ext.x_bearing
