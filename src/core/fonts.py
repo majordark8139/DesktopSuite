@@ -65,11 +65,10 @@ def register_bundled_fonts() -> bool:
             count = 0
             for ext_pattern in ("*.ttf", "*.otf"):
                 for font_file in font_dir.glob(ext_pattern):
-                    res = gdi32.AddFontResourceExW(str(font_file.resolve()), FR_PRIVATE, 0)
+                    res = gdi32.AddFontResourceExW(str(font_file.resolve()), FR_PRIVATE, None)
                     if res > 0:
                         count += 1
             if count > 0:
-                _FONTS_REGISTERED = True
                 log.info("Registered %d bundled fonts with Windows GDI from %s", count, font_dir)
                 success = True
                 try:
@@ -80,18 +79,19 @@ def register_bundled_fonts() -> bool:
         except Exception as exc:
             log.warning("Failed to register bundled fonts with Windows GDI: %s", exc)
 
-    # 2. Register with Qt QFontDatabase if PyQt5 is loaded
+    # 2. Register with Qt QFontDatabase if QApplication instance exists
     try:
-        from PyQt5.QtGui import QFontDatabase
-        qt_count = 0
-        for ext_pattern in ("*.ttf", "*.otf"):
-            for font_file in font_dir.glob(ext_pattern):
-                fid = QFontDatabase.addApplicationFont(str(font_file.resolve()))
-                if fid >= 0:
-                    qt_count += 1
-        if qt_count > 0:
-            log.info("Registered %d bundled fonts with Qt QFontDatabase", qt_count)
-            success = True
+        from PyQt5.QtGui import QGuiApplication, QFontDatabase
+        if QGuiApplication.instance() is not None:
+            qt_count = 0
+            for ext_pattern in ("*.ttf", "*.otf"):
+                for font_file in font_dir.glob(ext_pattern):
+                    fid = QFontDatabase.addApplicationFont(str(font_file.resolve()))
+                    if fid >= 0:
+                        qt_count += 1
+            if qt_count > 0:
+                log.info("Registered %d bundled fonts with Qt QFontDatabase", qt_count)
+                success = True
     except Exception:
         pass
 
@@ -113,4 +113,5 @@ def register_bundled_fonts() -> bool:
     except Exception as exc:
         log.debug("Fontconfig registration skipped or failed: %s", exc)
 
-    return success or _FONTS_REGISTERED
+    _FONTS_REGISTERED = True
+    return True
