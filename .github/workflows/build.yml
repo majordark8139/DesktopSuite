@@ -71,17 +71,16 @@ jobs:
       - name: Prepare Windows Distribution Archive
         shell: powershell
         run: |
-          New-Item -ItemType Directory -Force -Path "release\DesktopSuite"
-          Copy-Item "dist\DesktopSuite.exe" -Destination "release\DesktopSuite\" -Force
-          Copy-Item "assets" -Destination "release\DesktopSuite\" -Recurse -Force
+          $distDir = "dist\DesktopSuite"
+          Copy-Item "assets" -Destination "$distDir\" -Recurse -Force
           if (Test-Path "assets\bin\api-ms-win-core-path-l1-1-0.dll") {
-            Copy-Item "assets\bin\api-ms-win-core-path-l1-1-0.dll" -Destination "release\DesktopSuite\" -Force
+            Copy-Item "assets\bin\api-ms-win-core-path-l1-1-0.dll" -Destination "$distDir\" -Force
             Write-Host "Bundled Windows 7 api-ms-win-core-path-l1-1-0.dll into portable root"
           }
-          Copy-Item "Launch_DesktopSuite.bat" -Destination "release\DesktopSuite\" -Force
-          Copy-Item "README.md" -Destination "release\DesktopSuite\" -Force
-          Copy-Item "README_WINDOWS.md" -Destination "release\DesktopSuite\" -Force
-          Compress-Archive -Path "release\DesktopSuite\*" -DestinationPath "DesktopSuite-Windows-Portable.zip" -Force
+          Copy-Item "Launch_DesktopSuite.bat" -Destination "$distDir\" -Force
+          Copy-Item "README.md" -Destination "$distDir\" -Force
+          Copy-Item "README_WINDOWS.md" -Destination "$distDir\" -Force
+          Compress-Archive -Path "$distDir\*" -DestinationPath "DesktopSuite-Windows-Portable.zip" -Force
           Write-Host "Created DesktopSuite-Windows-Portable.zip successfully"
 
       - name: Upload Windows Portable Artifact

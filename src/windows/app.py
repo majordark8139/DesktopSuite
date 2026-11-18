@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from PyQt5.QtWidgets import QApplication
+
 from src.core.config import ConfigManager
 from src.core.fonts import register_bundled_fonts
 from src.themes.registry import REGISTRY
@@ -29,9 +31,16 @@ class WinAppController:
     """
 
     def __init__(self) -> None:
-        # Run pre-flight dependency inspection & fixups
-        run_first_launch_check(background=True)
+        # 1. Initialize QApplication before any QWidgets
+        self._gui_app = QApplication.instance()
+        if self._gui_app is None:
+            self._gui_app = QApplication(sys.argv)
+
+        # 2. Register bundled fonts with Windows GDI
         register_bundled_fonts()
+
+        # 3. Asynchronously inspect dependencies (zero blocking on startup)
+        run_first_launch_check(background=True)
 
         self.cfg = ConfigManager()
         self.registry = REGISTRY
@@ -40,10 +49,9 @@ class WinAppController:
             intensity=float(self.cfg.get("canvas.visualizer_intensity") or 0.65)
         )
         self.canvas: Optional[WinDesktopCanvasWindow] = None
-        self._gui_app = None
         self._gui_window = None
 
-        log.info("WinAppController initialised")
+        log.info("WinAppController initialised successfully")
 
     def start_wallpaper(self) -> bool:
         wp = self.cfg.get("wallpaper") or {}
@@ -52,7 +60,7 @@ class WinAppController:
             log.warning("start_wallpaper: no valid video_path in config")
             return False
 
-        return self.engine.start(
+        started = self.engine.start(
             video_path=path,
             speed=float(wp.get("playback_speed", 1.0)),
             volume=int(wp.get("volume", 50)),
@@ -61,13 +69,19 @@ class WinAppController:
             fps_limit=wp.get("fps_limit", "native"),
             autopause=wp.get("autopause", "focus"),
         )
+        if started and self.canvas:
+            self.canvas.lower_to_desktop()
+        return started
 
     def stop_wallpaper(self) -> None:
         self.engine.stop()
 
     def restart_wallpaper(self) -> bool:
         self.engine.stop()
-        return self.start_wallpaper()
+        res = self.start_wallpaper()
+        if self.canvas:
+            self.canvas.lower_to_desktop()
+        return res
 
     def start_canvas(self) -> None:
         if self.canvas is not None:
@@ -112,42 +126,24 @@ class WinAppController:
         self.start_wallpaper()
 
     def show_control_center(self) -> None:
-        try:
-            from PyQt5.QtWidgets import QApplication
-            from src.windows.control_center import create_control_center
+        from src.windows.control_center import create_control_center
 
-            if self._gui_app is None:
-                self._gui_app = QApplication.instance() or QApplication(sys.argv)
+        if self._gui_window is None:
+            self._gui_window = create_control_center(self)
 
-            if self._gui_window is None:
-                self._gui_window = create_control_center(self)
+        if self._gui_window:
+            self._gui_window.show()
+            self._gui_window.raise_()
+            self._gui_window.activateWindow()
 
-            if self._gui_window:
-                self._gui_window.show()
-                self._gui_window.raise_()
-                self._gui_window.activateWindow()
-                self._gui_app.exec_()
-        except ImportError:
-            log.warning("PyQt5 is not installed; running in background mode")
-            # Keep main thread alive
-            try:
-                while True:
-                    time.sleep(1.0)
-            except KeyboardInterrupt:
-                pass
+    def run(self, daemon: bool = False) -> None:
+        self.start_all()
+        if not daemon:
+            self.show_control_center()
+        self._gui_app.exec_()
 
 
 def run_windows(daemon: bool = False) -> None:
     """Windows entry point for DesktopSuite."""
     ctrl = WinAppController()
-    ctrl.start_all()
-
-    if not daemon:
-        ctrl.show_control_center()
-    else:
-        try:
-            while True:
-                time.sleep(1.0)
-        except KeyboardInterrupt:
-            ctrl.engine.stop()
-            ctrl.stop_canvas()
+    ctrl.run(daemon=daemon)

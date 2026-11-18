@@ -11,9 +11,9 @@ Native, hardware-accelerated desktop widget and live wallpaper engine for Window
    - Unlike Linux XFCE, **your desktop icons remain 100% visible and interactive on top of the live wallpaper**.
    - Hardware-accelerated decoding using DirectX / DXVA2 (`--vo=gpu --hwdec=dxva2-copy`) on Intel HD Graphics (Haswell i3 HD 4400) and dedicated GPUs for near 0% CPU consumption.
 
-2. **Native Win32 Layered HUD Canvas**:
-   - All 26 vector Cairo themes run natively with per-pixel alpha transparency via `UpdateLayeredWindow`.
-   - Normal mode is click-through (`WS_EX_TRANSPARENT`), allowing interaction with icons and apps underneath.
+2. **Hardware-Composited Desktop HUD Canvas**:
+   - All 26 vector Cairo themes run natively with per-pixel alpha transparency via PyQt5 composited transparent overlay.
+   - Normal mode is click-through (`Qt.WA_TransparentForMouseEvents`), allowing interaction with desktop icons and apps underneath.
    - Edit mode enables interactive drag-and-drop bounding box repositioning with atomic persistence.
 
 3. **WASAPI Loopback Audio Visualizer**:
