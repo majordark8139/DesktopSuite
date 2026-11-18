@@ -44,11 +44,10 @@ HOTKEY_PRESETS = {
 }
 
 _WIN_DARK_QSS = """
-QMainWindow, QWidget#CentralWidget, QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget,
-QWidget#tab_wp, QWidget#tab_cv, QWidget#content_wp, QWidget#content_cv {
+QMainWindow, QWidget#CentralWidget, QWidget#tab_wp, QWidget#tab_cv, QWidget#content_wp, QWidget#content_cv {
     background-color: #1e1e2e;
     color: #cdd6f4;
-    font-family: 'Segoe UI', sans-serif;
+    font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
     font-size: 12px;
 }
 QScrollArea {
@@ -108,58 +107,8 @@ QPushButton:hover {
     background-color: #45475a;
     border-color: #585b70;
 }
-QPushButton#btn-primary {
-    background-color: #89b4fa;
-    color: #1e1e2e;
-    border: none;
-}
-QPushButton#btn-primary:hover {
-    background-color: #b4befe;
-}
-QPushButton#btn-danger {
-    background-color: #f38ba8;
-    color: #1e1e2e;
-    border: none;
-}
-QPushButton#btn-danger:hover {
-    background-color: #f5c2e7;
-}
-QPushButton#btn-kill {
-    background-color: #e53935;
-    color: #ffffff;
-    font-weight: bold;
-    border: none;
-}
-QPushButton#btn-kill:hover {
-    background-color: #ef5350;
-}
-QPushButton#btn-warning {
-    background-color: #fab387;
-    color: #1e1e2e;
-    border: none;
-}
-QPushButton#btn-warning:hover {
-    background-color: #f9e2af;
-}
-QPushButton#btn-unlock {
-    background-color: #00acc1;
-    color: #ffffff;
-    font-size: 13px;
-    padding: 9px 18px;
-    border: none;
-}
-QPushButton#btn-unlock:hover {
-    background-color: #00bcd4;
-}
-QPushButton#btn-lock {
-    background-color: #e53935;
-    color: #ffffff;
-    font-size: 13px;
-    padding: 9px 18px;
-    border: none;
-}
-QPushButton#btn-lock:hover {
-    background-color: #ef5350;
+QPushButton:pressed {
+    background-color: #585b70;
 }
 QSlider::groove:horizontal {
     height: 6px;
@@ -386,30 +335,125 @@ class ControlCenterWindow(QMainWindow):
         h_status.addStretch()
         v_eng.addLayout(h_status)
 
-        h_btns = QHBoxLayout()
+        # Engine buttons: 2-row layout with bold, high-contrast, crystal-clear buttons
+        # Row 1: Primary Controls (Start, Stop, Restart)
+        h_btns_row1 = QHBoxLayout()
+        h_btns_row1.setSpacing(8)
+
         btn_start = QPushButton("▶  Start")
-        btn_start.setObjectName("btn-primary")
+        btn_start.setStyleSheet("""
+            QPushButton {
+                background-color: #89b4fa;
+                color: #11111b;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #b4befe;
+            }
+            QPushButton:pressed {
+                background-color: #74c7ec;
+            }
+        """)
         btn_start.clicked.connect(self._on_start)
 
         btn_stop = QPushButton("■  Stop")
-        btn_stop.setObjectName("btn-danger")
+        btn_stop.setStyleSheet("""
+            QPushButton {
+                background-color: #f38ba8;
+                color: #11111b;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #f5c2e7;
+            }
+            QPushButton:pressed {
+                background-color: #eba0ac;
+            }
+        """)
         btn_stop.clicked.connect(self._on_stop)
 
+        btn_restart = QPushButton("↺  Restart")
+        btn_restart.setStyleSheet("""
+            QPushButton {
+                background-color: #fab387;
+                color: #11111b;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #f9e2af;
+            }
+            QPushButton:pressed {
+                background-color: #f5a97f;
+            }
+        """)
+        btn_restart.clicked.connect(self._on_restart)
+
+        h_btns_row1.addWidget(btn_start, 1)
+        h_btns_row1.addWidget(btn_stop, 1)
+        h_btns_row1.addWidget(btn_restart, 1)
+        v_eng.addLayout(h_btns_row1)
+
+        # Row 2: Secondary / Safety Controls (Pause / Resume, Kill Wallpaper)
+        h_btns_row2 = QHBoxLayout()
+        h_btns_row2.setSpacing(8)
+
+        btn_pause = QPushButton("⏸  Pause / Resume")
+        btn_pause.setStyleSheet("""
+            QPushButton {
+                background-color: #313244;
+                color: #cdd6f4;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 12px;
+                border: 1px solid #45475a;
+            }
+            QPushButton:hover {
+                background-color: #45475a;
+                border-color: #585b70;
+            }
+            QPushButton:pressed {
+                background-color: #585b70;
+            }
+        """)
+        btn_pause.clicked.connect(self._on_pause)
+
         btn_kill = QPushButton("💀  Kill Wallpaper")
-        btn_kill.setObjectName("btn-kill")
+        btn_kill.setStyleSheet("""
+            QPushButton {
+                background-color: #e53935;
+                color: #ffffff;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 12px;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #ef5350;
+            }
+            QPushButton:pressed {
+                background-color: #c62828;
+            }
+        """)
         btn_kill.setToolTip("Force terminate mpv process immediately")
         btn_kill.clicked.connect(self._on_kill)
 
-        btn_restart = QPushButton("↺  Restart")
-        btn_restart.setObjectName("btn-warning")
-        btn_restart.clicked.connect(self._on_restart)
-
-        btn_pause = QPushButton("⏸  Pause / Resume")
-        btn_pause.clicked.connect(self._on_pause)
-
-        for b in (btn_start, btn_stop, btn_kill, btn_restart, btn_pause):
-            h_btns.addWidget(b)
-        v_eng.addLayout(h_btns)
+        h_btns_row2.addWidget(btn_pause, 1)
+        h_btns_row2.addWidget(btn_kill, 1)
+        v_eng.addLayout(h_btns_row2)
 
         h_file = QHBoxLayout()
         h_file.addWidget(QLabel("Video:"))
@@ -418,6 +462,19 @@ class ControlCenterWindow(QMainWindow):
         self.lbl_file = QLabel(video_display)
         self.lbl_file.setStyleSheet("color: #a6adc8; font-style: italic;")
         btn_browse = QPushButton("Browse...")
+        btn_browse.setStyleSheet("""
+            QPushButton {
+                background-color: #313244;
+                color: #cdd6f4;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: bold;
+                border: 1px solid #45475a;
+            }
+            QPushButton:hover {
+                background-color: #45475a;
+            }
+        """)
         btn_browse.clicked.connect(self._on_browse)
         h_file.addWidget(self.lbl_file, 1)
         h_file.addWidget(btn_browse)
@@ -486,9 +543,34 @@ class ControlCenterWindow(QMainWindow):
         h_hk.addWidget(self.cb_hotkey, 1)
 
         btn_bind_hk = QPushButton("Bind Hotkey")
-        btn_bind_hk.setObjectName("btn-primary")
+        btn_bind_hk.setStyleSheet("""
+            QPushButton {
+                background-color: #89b4fa;
+                color: #11111b;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: bold;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #b4befe;
+            }
+        """)
         btn_bind_hk.clicked.connect(lambda: self._register_global_hotkey(self.cb_hotkey.currentText()))
         btn_remove_hk = QPushButton("Disable")
+        btn_remove_hk.setStyleSheet("""
+            QPushButton {
+                background-color: #313244;
+                color: #cdd6f4;
+                border-radius: 6px;
+                padding: 6px 14px;
+                font-weight: bold;
+                border: 1px solid #45475a;
+            }
+            QPushButton:hover {
+                background-color: #45475a;
+            }
+        """)
         btn_remove_hk.clicked.connect(lambda: (self.cb_hotkey.setCurrentText("Disabled"), self._register_global_hotkey("Disabled")))
         h_hk.addWidget(btn_bind_hk)
         h_hk.addWidget(btn_remove_hk)
@@ -731,10 +813,37 @@ class ControlCenterWindow(QMainWindow):
 
         h_drag_btns = QHBoxLayout()
         self.btn_drag = QPushButton("🔓  Unlock Drag Mode")
-        self.btn_drag.setObjectName("btn-unlock")
+        self.btn_drag.setStyleSheet("""
+            QPushButton {
+                background-color: #00acc1;
+                color: #ffffff;
+                font-weight: bold;
+                padding: 9px 18px;
+                border-radius: 6px;
+                font-size: 13px;
+                border: 1px solid #26c6da;
+            }
+            QPushButton:hover {
+                background-color: #00bcd4;
+            }
+        """)
         self.btn_drag.clicked.connect(self._on_toggle_drag)
 
-        btn_reset = QPushButton("Reset Center Layout")
+        btn_reset = QPushButton("↺  Reset Center Layout")
+        btn_reset.setStyleSheet("""
+            QPushButton {
+                background-color: #313244;
+                color: #cdd6f4;
+                font-weight: bold;
+                padding: 9px 18px;
+                border-radius: 6px;
+                font-size: 12px;
+                border: 1px solid #45475a;
+            }
+            QPushButton:hover {
+                background-color: #45475a;
+            }
+        """)
         btn_reset.clicked.connect(self._on_reset_layout)
 
         h_drag_btns.addWidget(self.btn_drag)

@@ -101,7 +101,7 @@ class WinAppController:
     def start_canvas(self) -> None:
         if self.canvas is not None:
             return
-        theme_name = self.cfg.get("canvas.active_theme") or "Original Cursive"
+        theme_name = self.cfg.get("canvas.active_theme") or "Mond Minimal"
         theme = self.registry.get(theme_name) or self.registry.get_default()
 
         self.audio.start()

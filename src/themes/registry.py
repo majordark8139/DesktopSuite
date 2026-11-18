@@ -571,9 +571,9 @@ from .collection import (
 )
 
 REGISTRY = ThemeRegistry()
+REGISTRY.add(MondMinimalTheme())
 REGISTRY.add(OriginalCursiveTheme())
 REGISTRY.add(MondCleanTheme())
-REGISTRY.add(MondMinimalTheme())
 REGISTRY.add(EleganceTwoToneTheme())
 REGISTRY.add(SonderAxisTheme())
 REGISTRY.add(WildYouthTheme())

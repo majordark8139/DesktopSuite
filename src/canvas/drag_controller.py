@@ -92,13 +92,19 @@ class DragController:
         """
         Load positions from :class:`ConfigManager` into :attr:`components`.
 
-        Missing components get a default bounding-box of 200×60.
+        Missing components get centered default coordinates.
         """
+        defaults = {
+            "clock": {"x": 468.0, "y": 260.0},
+            "date": {"x": 468.0, "y": 370.0},
+            "visualizer": {"x": 468.0, "y": 410.0},
+        }
         for name in COMPONENT_NAMES:
             pos = self._cfg.get(f"positions.{name}") or {}
+            def_pos = defaults.get(name, {"x": 468.0, "y": 260.0})
             self.components[name] = {
-                "x": float(pos.get("x", 60)),
-                "y": float(pos.get("y", 60)),
+                "x": float(pos.get("x", def_pos["x"])),
+                "y": float(pos.get("y", def_pos["y"])),
                 "w": 200.0,   # placeholder — updated by the canvas on first draw
                 "h":  60.0,
             }
