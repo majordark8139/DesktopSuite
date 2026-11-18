@@ -25,7 +25,8 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y python3-gi python3-cairo python3-numpy \
-                              gir1.2-gtk-3.0 libfontconfig1 fontconfig mpv
+                              gir1.2-gtk-3.0 libfontconfig1 fontconfig mpv \
+                              libcairo2-dev pkg-config libgirepository1.0-dev python3-dev
 
       - name: Install Python Dependencies
         run: |
@@ -52,7 +53,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pyinstaller pillow
 
       - name: Install mpv for Windows
         shell: powershell
