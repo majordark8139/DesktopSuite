@@ -18,6 +18,7 @@ from src.themes.registry import REGISTRY
 from src.wallpaper.win_engine import WinWallpaperEngine
 from src.canvas.win_audio import WinAudioStream
 from src.canvas.win_window import WinDesktopCanvasWindow
+from src.windows.dependencies import run_first_launch_check
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ class WinAppController:
     """
 
     def __init__(self) -> None:
+        # Run pre-flight dependency inspection & fixups
+        run_first_launch_check(background=True)
         register_bundled_fonts()
 
         self.cfg = ConfigManager()

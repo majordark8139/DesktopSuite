@@ -11,14 +11,19 @@ datas = [
     ('assets/icons', 'assets/icons'),
 ]
 
-# Include bundled mpv if present
+# Include bundled binaries (e.g. Windows 7 API path DLL and mpv)
+binaries = []
+dll_path = proj_root / 'assets' / 'bin' / 'api-ms-win-core-path-l1-1-0.dll'
+if dll_path.exists():
+    binaries.append((str(dll_path), '.'))
+
 if (proj_root / 'assets' / 'bin').exists():
     datas.append(('assets/bin', 'assets/bin'))
 
 a = Analysis(
     ['src/main.py'],
     pathex=[str(proj_root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[
         'numpy',

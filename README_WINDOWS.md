@@ -30,7 +30,11 @@ Native, hardware-accelerated desktop widget and live wallpaper engine for Window
 ### Option 1: Standalone Portable Binary (Recommended)
 1. Download `DesktopSuite-Windows-Portable.zip` from [GitHub Actions Builds](https://github.com/majordark8139/DesktopSuite/actions) or Releases.
 2. Extract the archive anywhere on your machine.
-3. Run `DesktopSuite.exe`.
+3. Run `DesktopSuite.exe` (or `Launch_DesktopSuite.bat` for automatic first-launch dependency resolution).
+
+> [!NOTE]
+> **Windows 7 Out-of-the-Box Compatibility:**
+> The distribution bundles `api-ms-win-core-path-l1-1-0.dll` both in the portable root and inside the executable bundle, resolving the missing Python 3.10 DLL error on Windows 7 SP1 automatically. If Visual C++ runtimes are missing on an unpatched Windows 7 installation, running `Launch_DesktopSuite.bat` will automatically download and install them silently on first run.
 
 ### Option 2: Running from Source (Python 3.8 - 3.12)
 1. Install Python 3.8+ (for Windows 7, use Python 3.8.10 or `cpython-win7`).

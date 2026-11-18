@@ -74,9 +74,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path "release\DesktopSuite"
           Copy-Item "dist\DesktopSuite.exe" -Destination "release\DesktopSuite\" -Force
           Copy-Item "assets" -Destination "release\DesktopSuite\" -Recurse -Force
+          if (Test-Path "assets\bin\api-ms-win-core-path-l1-1-0.dll") {
+            Copy-Item "assets\bin\api-ms-win-core-path-l1-1-0.dll" -Destination "release\DesktopSuite\" -Force
+            Write-Host "Bundled Windows 7 api-ms-win-core-path-l1-1-0.dll into portable root"
+          }
+          Copy-Item "Launch_DesktopSuite.bat" -Destination "release\DesktopSuite\" -Force
           Copy-Item "README.md" -Destination "release\DesktopSuite\" -Force
           Copy-Item "README_WINDOWS.md" -Destination "release\DesktopSuite\" -Force
-          Compress-Archive -Path "release\DesktopSuite" -DestinationPath "DesktopSuite-Windows-Portable.zip" -Force
+          Compress-Archive -Path "release\DesktopSuite\*" -DestinationPath "DesktopSuite-Windows-Portable.zip" -Force
           Write-Host "Created DesktopSuite-Windows-Portable.zip successfully"
 
       - name: Upload Windows Portable Artifact
