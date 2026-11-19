@@ -72,9 +72,12 @@ class WinDesktopCanvasWindow(QWidget):
         self.height = geo.height() if geo else 1080
         self.setGeometry(0, 0, self.width, self.height)
 
-        # Cairo rendering surface & context
-        self._surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, self.width, self.height)
-        self._ctx = cairo.Context(self._surface)
+        # Cairo rendering surface & context (FreeType proxy on Windows 7)
+        from src.core.win7_font_engine import SharedCairoQtSurface, get_font_registry
+        self._font_registry = get_font_registry()
+        self._shared_surface = SharedCairoQtSurface(self.width, self.height, self._font_registry)
+        self._ctx = self._shared_surface.create_context()
+        self._surface = self._shared_surface.cairo_surface
 
         self._time_data = TimeData.now(is_24h=False)
         self._last_sec = -1
@@ -231,13 +234,10 @@ class WinDesktopCanvasWindow(QWidget):
 
         self._surface.flush()
 
-        # 10. Blit Cairo memory buffer into QPainter
+        # 10. Blit Cairo memory buffer into QPainter (zero-copy shared surface)
         try:
-            raw_bytes = self._surface.get_data()
-            stride = self._surface.get_stride()
-            qimg = QImage(raw_bytes, self.width, self.height, stride, QImage.Format_ARGB32_Premultiplied)
             painter = QPainter(self)
-            painter.drawImage(0, 0, qimg)
+            painter.drawImage(0, 0, self._shared_surface.qimage)
             painter.end()
         except Exception as exc:
             log.debug("paintEvent drawImage error: %s", exc)

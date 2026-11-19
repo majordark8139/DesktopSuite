@@ -8,11 +8,18 @@ echo ========================================================
 echo   DesktopSuite - Windows 7 / 8 / 10 / 11 Launcher
 echo ========================================================
 
-:: 1. Ensure Windows 7 API path compatibility DLL is present in application root
+:: 1. Ensure Windows 7 API path compatibility DLL is present in application root and _internal
 if not exist "api-ms-win-core-path-l1-1-0.dll" (
     if exist "assets\bin\api-ms-win-core-path-l1-1-0.dll" (
         echo [*] Installing Windows 7 path compatibility DLL...
         copy /y "assets\bin\api-ms-win-core-path-l1-1-0.dll" "api-ms-win-core-path-l1-1-0.dll" >nul
+    )
+)
+if exist "_internal" (
+    if not exist "_internal\api-ms-win-core-path-l1-1-0.dll" (
+        if exist "assets\bin\api-ms-win-core-path-l1-1-0.dll" (
+            copy /y "assets\bin\api-ms-win-core-path-l1-1-0.dll" "_internal\api-ms-win-core-path-l1-1-0.dll" >nul
+        )
     )
 )
 

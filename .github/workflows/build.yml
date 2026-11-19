@@ -54,8 +54,9 @@ jobs:
             $mpvBin = "C:\tools\mpv\mpv.exe"
           }
           if (Test-Path $mpvBin) {
-            Copy-Item $mpvBin -Destination "assets\bin\mpv.exe" -Force
-            Write-Host "Bundled mpv.exe from $mpvBin"
+            $mpvDir = Split-Path -Parent $mpvBin
+            Copy-Item "$mpvDir\*" -Destination "assets\bin\" -Recurse -Force
+            Write-Host "Bundled all mpv dependencies from $mpvDir into assets\bin"
           } else {
             Write-Warning "mpv.exe could not be found to bundle into assets\bin"
           }
@@ -75,7 +76,10 @@ jobs:
           Copy-Item "assets" -Destination "$distDir\" -Recurse -Force
           if (Test-Path "assets\bin\api-ms-win-core-path-l1-1-0.dll") {
             Copy-Item "assets\bin\api-ms-win-core-path-l1-1-0.dll" -Destination "$distDir\" -Force
-            Write-Host "Bundled Windows 7 api-ms-win-core-path-l1-1-0.dll into portable root"
+            if (Test-Path "$distDir\_internal") {
+              Copy-Item "assets\bin\api-ms-win-core-path-l1-1-0.dll" -Destination "$distDir\_internal\" -Force
+            }
+            Write-Host "Bundled Windows 7 api-ms-win-core-path-l1-1-0.dll into portable root and _internal"
           }
           Copy-Item "Launch_DesktopSuite.bat" -Destination "$distDir\" -Force
           Copy-Item "README.md" -Destination "$distDir\" -Force

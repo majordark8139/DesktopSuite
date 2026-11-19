@@ -31,10 +31,17 @@ class WinAppController:
     """
 
     def __init__(self) -> None:
+        # 0. Enable Qt FreeType font engine on Windows 7
+        from src.core.win7_font_engine import enable_qt_freetype_on_win7, get_font_registry
+        enable_qt_freetype_on_win7()
+
         # 1. Initialize QApplication before any QWidgets
         self._gui_app = QApplication.instance()
         if self._gui_app is None:
             self._gui_app = QApplication(sys.argv)
+
+        # Initialize bundled font registry with Qt FreeType engine
+        self._font_registry = get_font_registry()
 
         from PyQt5.QtGui import QPalette, QColor
         pal = QPalette()
@@ -65,6 +72,8 @@ class WinAppController:
         )
         self.canvas: Optional[WinDesktopCanvasWindow] = None
         self._gui_window = None
+
+        self._gui_app.aboutToQuit.connect(self.stop_all)
 
         log.info("WinAppController initialised successfully")
 
@@ -154,6 +163,10 @@ class WinAppController:
     def start_all(self) -> None:
         self.start_canvas()
         self.start_wallpaper()
+
+    def stop_all(self) -> None:
+        self.stop_canvas()
+        self.stop_wallpaper()
 
     def show_control_center(self) -> None:
         from src.windows.control_center import create_control_center

@@ -64,6 +64,10 @@ if str(_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if sys.platform == "win32":
+        # Force Qt FreeType font engine on Windows 7 before any Qt modules load
+        from src.core.win7_font_engine import enable_qt_freetype_on_win7
+        enable_qt_freetype_on_win7()
+
         if "--kill-wallpaper" in sys.argv:
             from src.wallpaper.win_engine import WinWallpaperEngine
             WinWallpaperEngine().stop()

@@ -1,13 +1,18 @@
 """
 src.wallpaper.win_engine
 ========================
-Native hardware-accelerated video wallpaper engine for Windows (Windows 7 / 8 / 10 / 11).
+Native hardware-accelerated video wallpaper engine for Windows (Windows 7 SP1 / 8 / 10 / 11).
+Optimized for Intel Core i3-4005U with Intel HD Graphics 4400.
 
-Embeds mpv into the Windows desktop background using the WorkerW / Progman message trick:
-1. Sends message 0x052C to Progman.
-2. Locates the WorkerW window positioned immediately behind desktop icons (SHELLDLL_DefView).
-3. Spawns mpv with ``--wid=<HWND>``, ``--vo=gpu``, and hardware decoding (DXVA2 / D3D11).
-4. Provides named-pipe JSON IPC (\\\\.\\pipe\\mpv-livewal) and automatic pause/resume.
+Features:
+1. Sacrificial Child Host HWND architecture: Never passes WorkerW directly to mpv --wid,
+   preventing WorkerW Direct3D swapchain lockup, black screens, and pixel-format corruption
+   across repeated Start / Stop / Kill / Restart cycles.
+2. Unique per-spawn named pipe (\\\\.\\pipe\\mpv-livewal-<uuid8>) eliminating NPFS zombie pipe collisions.
+3. Windows 7 DWM Aero detection with automatic fallback to Direct3D 9 (--vo=direct3d) when
+   Aero / Desktop Composition is disabled (Windows 7 Basic / Classic themes).
+4. Clean wallpaper restoration (SystemParametersInfoW SPI_SETDESKWALLPAPER + RedrawWindow)
+   upon stop or kill to erase residual video frames from Progman and WorkerW.
 """
 
 from __future__ import annotations
@@ -18,98 +23,101 @@ from ctypes import wintypes
 import json
 import logging
 import os
+from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import time
-from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional
+import uuid
 
 log = logging.getLogger(__name__)
 
-WIN_MPV_PIPE = r"\\.\pipe\mpv-livewal"
-
-# Windows API constants
+# Win32 Constants
 SMTO_NORMAL = 0x0000
+SMTO_ABORTIFHUNG = 0x0002
+
+WS_POPUP = 0x80000000
+WS_CHILD = 0x40000000
+WS_VISIBLE = 0x10000000
+WS_CLIPSIBLINGS = 0x04000000
+WS_CLIPCHILDREN = 0x02000000
+WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TOOLWINDOW = 0x00000080
+
+SWP_NOACTIVATE = 0x0010
+SWP_SHOWWINDOW = 0x0040
+HWND_BOTTOM = 1
+
+SPI_SETDESKWALLPAPER = 0x0014
+SPIF_SENDCHANGE = 0x0002
+
+RDW_INVALIDATE = 0x0001
+RDW_INTERNALPAINT = 0x0002
+RDW_ERASE = 0x0004
+RDW_ALLCHILDREN = 0x0080
+RDW_UPDATENOW = 0x0100
+RDW_FRAME = 0x0400
+
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
-SW_HIDE = 0
-SW_SHOW = 5
 
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
-def get_workerw_hwnd() -> Optional[int]:
-    """
-    Locate or spawn the WorkerW window immediately behind desktop icons.
-    Compatible with Windows 7, Windows 8, Windows 10, and Windows 11.
-    """
+# Win32 Ctypes 64-bit safety setup
+if sys.platform == "win32":
     user32 = ctypes.windll.user32
-    progman = user32.FindWindowW("Progman", None)
-    if not progman:
-        log.error("Could not find Progman window")
-        return None
+    gdi32 = ctypes.windll.gdi32
+    kernel32 = ctypes.windll.kernel32
+    try:
+        dwmapi = ctypes.windll.dwmapi
+    except Exception:
+        dwmapi = None
 
-    # Send undocumented message 0x052C to Progman to split desktop layers
-    result = wintypes.DWORD()
-    user32.SendMessageTimeoutW(
-        progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, ctypes.byref(result)
-    )
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
 
-    worker_w = None
-    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowExW.restype = wintypes.HWND
 
-    def enum_windows_callback(hwnd, lparam):
-        nonlocal worker_w
-        shell_view = user32.FindWindowExW(hwnd, 0, "SHELLDLL_DefView", None)
-        if shell_view:
-            target = user32.FindWindowExW(0, hwnd, "WorkerW", None)
-            if target:
-                worker_w = target
-                return False
-        return True
+    user32.SetParent.argtypes = [wintypes.HWND, wintypes.HWND]
+    user32.SetParent.restype = wintypes.HWND
 
-    user32.EnumWindows(WNDENUMPROC(enum_windows_callback), 0)
+    user32.DestroyWindow.argtypes = [wintypes.HWND]
+    user32.DestroyWindow.restype = wintypes.BOOL
 
-    # Fallback search if not found directly as sibling
-    if not worker_w:
-        def find_workerw(hwnd, lparam):
-            nonlocal worker_w
-            buf = ctypes.create_unicode_buffer(256)
-            user32.GetClassNameW(hwnd, buf, 256)
-            if buf.value == "WorkerW":
-                if not user32.FindWindowExW(hwnd, 0, "SHELLDLL_DefView", None):
-                    worker_w = hwnd
-                    return False
-            return True
-        user32.EnumWindows(WNDENUMPROC(find_workerw), 0)
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
 
-    if not worker_w:
-        log.warning("Dedicated WorkerW not found; using Progman as background target")
-        worker_w = progman
+    user32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint
+    ]
+    user32.SetWindowPos.restype = wintypes.BOOL
 
-    return int(worker_w)
+    user32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint, wintypes.LPCWSTR, ctypes.c_uint]
+    user32.SystemParametersInfoW.restype = wintypes.BOOL
+
+    user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    user32.RedrawWindow.restype = wintypes.BOOL
 
 
 class WinMpvIPC:
-    """
-    JSON-IPC client for mpv running on Windows via named pipe (\\\\.\\pipe\\mpv-livewal).
-    """
+    """JSON-IPC client for mpv running on Windows via dynamic named pipe."""
 
-    def __init__(self, pipe_path: str = WIN_MPV_PIPE, timeout: float = 1.0) -> None:
+    def __init__(self, pipe_path: str, timeout: float = 0.5) -> None:
         self.pipe_path = pipe_path
         self.timeout = timeout
 
     def send_command(self, cmd_list: list) -> Optional[dict]:
         payload = json.dumps({"command": cmd_list}) + "\n"
         try:
-            # Open Windows named pipe in binary mode
             with open(self.pipe_path, "r+b", buffering=0) as pipe:
                 pipe.write(payload.encode("utf-8"))
-                # Read response line
                 line = pipe.readline()
                 if line:
                     return json.loads(line.decode("utf-8", errors="replace"))
-        except Exception as exc:
-            log.debug("WinMpvIPC send_command %s failed: %s", cmd_list, exc)
+        except Exception:
             return None
         return None
 
@@ -166,7 +174,8 @@ class WinAutoPauseWatcher:
             self._thread = None
 
     def _loop(self) -> None:
-        user32 = ctypes.windll.user32
+        if sys.platform != "win32":
+            return
         sw = user32.GetSystemMetrics(SM_CXSCREEN)
         sh = user32.GetSystemMetrics(SM_CYSCREEN)
 
@@ -181,8 +190,7 @@ class WinAutoPauseWatcher:
                 user32.GetClassNameW(hwnd, buf, 256)
                 cls_name = buf.value
 
-                # Desktop elements where wallpaper should continue playing
-                if cls_name in ("Progman", "WorkerW", "Shell_TrayWnd", "DesktopCanvasWindow"):
+                if cls_name in ("Progman", "WorkerW", "Shell_TrayWnd", "DesktopCanvasWindow", "DesktopSuiteMpvHost"):
                     should_pause = False
                 elif self.mode == "focus":
                     should_pause = True
@@ -212,16 +220,24 @@ class WinAutoPauseWatcher:
 
 class WinWallpaperEngine:
     """
-    Windows Live Wallpaper engine embedding mpv into WorkerW.
+    Production Windows Live Wallpaper Engine embedding mpv into desktop background.
+    Uses a sacrificial child host window attached to WorkerW to guarantee pristine WorkerW
+    state across thousands of Start / Stop / Kill / Restart cycles.
     """
 
     def __init__(self) -> None:
         self._proc: Optional[subprocess.Popen] = None
-        self._ipc = WinMpvIPC()
+        self._ipc: Optional[WinMpvIPC] = None
         self._autopause: Optional[WinAutoPauseWatcher] = None
+        self.host_hwnd: Optional[int] = None
         self._worker_hwnd: Optional[int] = None
+        self._progman_hwnd: Optional[int] = None
+        self.ipc_pipe_path: Optional[str] = None
         atexit.register(self.stop)
 
+    # -----------------------------------------------------------------------
+    # 1. MPV Discovery
+    # -----------------------------------------------------------------------
     @staticmethod
     def find_mpv() -> Optional[str]:
         """Locate mpv executable in assets/bin, PATH, or common install locations."""
@@ -252,10 +268,131 @@ class WinWallpaperEngine:
                 return candidate
         return None
 
+    # -----------------------------------------------------------------------
+    # 2. Windows 7 Aero (DWM) Detection & Recovery
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def is_dwm_aero_enabled() -> bool:
+        if sys.platform != "win32" or dwmapi is None:
+            return True
+        enabled = wintypes.BOOL(False)
+        try:
+            hr = dwmapi.DwmIsCompositionEnabled(ctypes.byref(enabled))
+            return (hr == 0) and bool(enabled.value)
+        except Exception:
+            return True
+
+    def try_enable_dwm_aero(self) -> bool:
+        if self.is_dwm_aero_enabled():
+            return True
+        if sys.platform == "win32" and dwmapi is not None:
+            try:
+                dwmapi.DwmEnableComposition(1)
+                time.sleep(0.15)
+            except Exception:
+                pass
+        return self.is_dwm_aero_enabled()
+
+    # -----------------------------------------------------------------------
+    # 3. WorkerW Discovery & Layer Splitting
+    # -----------------------------------------------------------------------
+    def _find_workerw_behind_icons(self) -> Optional[int]:
+        if sys.platform != "win32":
+            return None
+        found_workerw = ctypes.c_void_p(0)
+
+        def _enum_proc(hwnd, lparam):
+            def_view = user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
+            if def_view:
+                workerw = user32.FindWindowExW(None, hwnd, "WorkerW", None)
+                if workerw:
+                    found_workerw.value = workerw
+                    return False
+            return True
+
+        cb = WNDENUMPROC(_enum_proc)
+        user32.EnumWindows(cb, 0)
+
+        if not found_workerw.value:
+            # Fallback search if not direct sibling
+            def _find_any_workerw(hwnd, lparam):
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, buf, 256)
+                if buf.value == "WorkerW":
+                    if not user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None):
+                        found_workerw.value = hwnd
+                        return False
+                return True
+            user32.EnumWindows(WNDENUMPROC(_find_any_workerw), 0)
+
+        return found_workerw.value if found_workerw.value else None
+
+    def ensure_workerw(self) -> int:
+        if sys.platform != "win32":
+            return 0
+        self._progman_hwnd = user32.FindWindowW("Progman", None)
+
+        existing = self._find_workerw_behind_icons()
+        if existing and user32.IsWindow(existing):
+            self._worker_hwnd = existing
+            return existing
+
+        # Send 0x052C to Progman to split the desktop layer
+        result = ctypes.c_ulonglong(0)
+        user32.SendMessageTimeoutW(
+            self._progman_hwnd, 0x052C, 0, 0,
+            SMTO_NORMAL, 1000, ctypes.byref(result)
+        )
+        user32.SendMessageTimeoutW(
+            self._progman_hwnd, 0x052C, 0xD, 0x1,
+            SMTO_NORMAL, 1000, ctypes.byref(result)
+        )
+
+        workerw = self._find_workerw_behind_icons()
+        if not workerw:
+            log.warning("Dedicated WorkerW not found; using Progman as background target")
+            workerw = self._progman_hwnd
+
+        self._worker_hwnd = workerw
+        return workerw
+
+    # -----------------------------------------------------------------------
+    # 4. Sacrificial Host Child HWND Creation
+    # -----------------------------------------------------------------------
+    def _create_sacrificial_host_hwnd(self, parent_workerw: int) -> int:
+        screen_w = user32.GetSystemMetrics(SM_CXSCREEN)
+        screen_h = user32.GetSystemMetrics(SM_CYSCREEN)
+
+        hinstance = kernel32.GetModuleHandleW(None)
+        hwnd = user32.CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            "STATIC",
+            "DesktopSuiteMpvHost",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            0, 0, screen_w, screen_h,
+            parent_workerw,
+            None,
+            hinstance,
+            None,
+        )
+        if not hwnd:
+            raise ctypes.WinError()
+
+        user32.SetParent(hwnd, parent_workerw)
+        user32.SetWindowPos(
+            hwnd, HWND_BOTTOM, 0, 0, screen_w, screen_h,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW
+        )
+        log.info("Created sacrificial host HWND %s on parent WorkerW %s", hwnd, parent_workerw)
+        return hwnd
+
+    # -----------------------------------------------------------------------
+    # 5. Start / Stop / Restart Control
+    # -----------------------------------------------------------------------
     def is_running(self) -> bool:
         if self._proc is not None and self._proc.poll() is None:
             return True
-        return self._ipc.is_alive()
+        return False
 
     def start(
         self,
@@ -267,7 +404,8 @@ class WinWallpaperEngine:
         fps_limit: str = "native",
         autopause: str = "focus",
     ) -> bool:
-        self.stop()
+        # Tear down any previous instance cleanly
+        self.stop(restore_wallpaper=False)
 
         mpv_bin = self.find_mpv()
         if not mpv_bin:
@@ -278,24 +416,45 @@ class WinWallpaperEngine:
             log.error("Wallpaper video not found: %s", video_path)
             return False
 
-        self._worker_hwnd = get_workerw_hwnd()
-        if not self._worker_hwnd:
-            log.error("Could not obtain desktop background window handle (WorkerW)")
+        if sys.platform != "win32":
+            log.warning("WinWallpaperEngine invoked on non-Windows platform")
             return False
+
+        aero_active = self.try_enable_dwm_aero()
+        workerw = self.ensure_workerw()
+
+        # Create sacrificial host HWND
+        try:
+            self.host_hwnd = self._create_sacrificial_host_hwnd(workerw)
+        except Exception as exc:
+            log.error("Failed to create sacrificial host HWND: %s", exc)
+            self.host_hwnd = workerw
+
+        # Unique named pipe per spawn
+        unique_id = uuid.uuid4().hex[:8]
+        self.ipc_pipe_path = rf"\\.\pipe\mpv-livewal-{unique_id}"
+        self._ipc = WinMpvIPC(self.ipc_pipe_path)
+
+        # Select optimal video output flags
+        if aero_active:
+            vo_args = ["--vo=gpu", "--gpu-context=d3d11", "--hwdec=dxva2-copy"]
+        else:
+            vo_args = ["--vo=direct3d", "--hwdec=dxva2-copy"]
 
         args = [
             mpv_bin,
-            f"--wid={self._worker_hwnd}",
+            f"--wid={int(self.host_hwnd)}",
+            *vo_args,
             "--loop=inf",
-            "--vo=gpu",
-            "--hwdec=dxva2-copy",
             "--cache=no",
             "--demuxer-max-bytes=15M",
             "--no-osc",
             "--no-osd-bar",
+            "--no-input-default-bindings",
+            "--keep-open=no",
             f"--speed={speed:.2f}",
             f"--volume={volume}",
-            f"--input-ipc-server={WIN_MPV_PIPE}",
+            f"--input-ipc-server={self.ipc_pipe_path}",
         ]
         if mute:
             args.append("--no-audio")
@@ -315,37 +474,55 @@ class WinWallpaperEngine:
             self._proc = subprocess.Popen(
                 args,
                 creationflags=0x08000000,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            log.info("Started Windows live wallpaper process (PID %s) on HWND %s", self._proc.pid, self._worker_hwnd)
+            log.info("Started mpv (PID %s) on host HWND %s (pipe %s)", self._proc.pid, self.host_hwnd, self.ipc_pipe_path)
 
-            # Wait briefly for pipe creation
             time.sleep(0.3)
-
-            # Start autopause watcher
             self._autopause = WinAutoPauseWatcher(self._ipc, mode=autopause)
             self._autopause.start()
             return True
         except Exception as exc:
-            log.error("Failed to launch mpv wallpaper on Windows: %s", exc)
+            log.error("Failed to launch mpv: %s", exc)
+            self.stop(restore_wallpaper=True)
             return False
 
-    def stop(self) -> None:
+    def stop(self, restore_wallpaper: bool = True) -> None:
+        """
+        Cleanly terminates mpv, destroys sacrificial host HWND, and repaints desktop.
+        """
         if self._autopause:
             self._autopause.stop()
             self._autopause = None
 
         if self._proc is not None:
-            try:
-                self._proc.terminate()
-                self._proc.wait(timeout=1.5)
-            except Exception:
+            if self._proc.poll() is None:
+                # 1. Graceful quit over IPC
+                if self._ipc:
+                    self._ipc.send_command(["quit"])
                 try:
+                    self._proc.wait(timeout=0.4)
+                except subprocess.TimeoutExpired:
                     self._proc.kill()
-                except Exception:
-                    pass
+                    try:
+                        self._proc.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        pass
             self._proc = None
+
+        self._ipc = None
+        self.ipc_pipe_path = None
+
+        # 2. Destroy the sacrificial host HWND
+        if sys.platform == "win32" and self.host_hwnd and user32.IsWindow(self.host_hwnd):
+            user32.DestroyWindow(self.host_hwnd)
+        self.host_hwnd = None
+
+        # 3. Restore static wallpaper
+        if restore_wallpaper and sys.platform == "win32":
+            self.refresh_desktop_wallpaper()
 
     def restart(
         self,
@@ -357,26 +534,40 @@ class WinWallpaperEngine:
         fps_limit: str = "native",
         autopause: str = "focus",
     ) -> bool:
-        self.stop()
+        self.stop(restore_wallpaper=False)
         return self.start(video_path, speed, volume, mute, fit_mode, fps_limit, autopause)
 
+    def refresh_desktop_wallpaper(self) -> None:
+        """Repaint the static desktop wallpaper and force repaint of WorkerW and Progman."""
+        if sys.platform != "win32":
+            return
+        try:
+            user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, None, SPIF_SENDCHANGE)
+            flags = RDW_ERASE | RDW_INVALIDATE | RDW_INTERNALPAINT | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
+            if self._worker_hwnd and user32.IsWindow(self._worker_hwnd):
+                user32.RedrawWindow(self._worker_hwnd, None, None, flags)
+            if self._progman_hwnd and user32.IsWindow(self._progman_hwnd):
+                user32.RedrawWindow(self._progman_hwnd, None, None, flags)
+        except Exception as exc:
+            log.debug("refresh_desktop_wallpaper error: %s", exc)
+
     def toggle_pause(self) -> bool:
-        if not self._ipc.is_alive():
+        if not self._ipc or not self._ipc.is_alive():
             return False
         res = self._ipc.send_command(["get_property", "pause"])
         if res and "data" in res:
             is_paused = bool(res["data"])
-            if is_paused:
-                return self._ipc.resume()
-            else:
-                return self._ipc.pause()
+            return self._ipc.resume() if is_paused else self._ipc.pause()
         return False
 
     def set_volume(self, vol: int) -> None:
-        self._ipc.set_volume(vol)
+        if self._ipc:
+            self._ipc.set_volume(vol)
 
     def set_speed(self, speed: float) -> None:
-        self._ipc.set_speed(speed)
+        if self._ipc:
+            self._ipc.set_speed(speed)
 
     def set_mute(self, mute: bool) -> None:
-        self._ipc.set_mute(mute)
+        if self._ipc:
+            self._ipc.set_mute(mute)

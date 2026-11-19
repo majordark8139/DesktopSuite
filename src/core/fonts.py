@@ -72,14 +72,12 @@ def register_bundled_fonts() -> bool:
             gdi32.AddFontResourceExW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p]
             gdi32.AddFontResourceExW.restype = ctypes.c_int
 
-            FR_PRIVATE = 0x10
             count = 0
             for ext_pattern in ("*.ttf", "*.otf"):
                 for font_file in font_dir.glob(ext_pattern):
                     p_str = str(font_file.resolve())
                     r1 = gdi32.AddFontResourceW(p_str)
-                    r2 = gdi32.AddFontResourceExW(p_str, FR_PRIVATE, None)
-                    if r1 > 0 or r2 > 0:
+                    if r1 > 0:
                         count += 1
                         _REGISTERED_PATHS.append(p_str)
 
@@ -104,19 +102,16 @@ def register_bundled_fonts() -> bool:
 
     # 2. Register with Qt QFontDatabase if QApplication instance exists
     try:
-        from PyQt5.QtGui import QGuiApplication, QFontDatabase
+        from PyQt5.QtGui import QGuiApplication
         if QGuiApplication.instance() is not None:
-            qt_count = 0
-            for ext_pattern in ("*.ttf", "*.otf"):
-                for font_file in font_dir.glob(ext_pattern):
-                    fid = QFontDatabase.addApplicationFont(str(font_file.resolve()))
-                    if fid >= 0:
-                        qt_count += 1
+            from src.core.win7_font_engine import get_font_registry
+            reg = get_font_registry()
+            qt_count = reg.load_fonts_from_directory(font_dir)
             if qt_count > 0:
                 log.info("Registered %d bundled fonts with Qt QFontDatabase", qt_count)
                 success = True
-    except Exception:
-        pass
+    except Exception as q_exc:
+        log.debug("Qt font registration skipped: %s", q_exc)
 
     # 3. Fontconfig registration (Linux or Windows with fontconfig available)
     try:
@@ -147,11 +142,9 @@ def _cleanup_fonts() -> None:
         return
     try:
         gdi32 = ctypes.windll.gdi32
-        FR_PRIVATE = 0x10
         for p_str in _REGISTERED_PATHS:
             try:
                 gdi32.RemoveFontResourceW(p_str)
-                gdi32.RemoveFontResourceExW(p_str, FR_PRIVATE, None)
             except Exception:
                 pass
         try:
