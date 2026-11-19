@@ -15,6 +15,8 @@ Themes included:
 from __future__ import annotations
 
 import math
+import os
+import sys
 import time
 from typing import Any, Optional
 
