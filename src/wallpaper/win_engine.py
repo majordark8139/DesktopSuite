@@ -83,6 +83,11 @@ RDW_FRAME = 0x0400
 SM_CXSCREEN = 0
 SM_CYSCREEN = 1
 
+CLR_NONE = 0xFFFFFFFF
+LVM_FIRST = 0x1000
+LVM_SETBKCOLOR = LVM_FIRST + 1
+LVM_SETTEXTBKCOLOR = LVM_FIRST + 38
+
 STATUS_ENTRYPOINT_NOT_FOUND = 0xC0000139  # -1073741511 signed
 
 # Win32 Ctypes 64-bit safety setup
@@ -149,6 +154,15 @@ if sys.platform == "win32":
 
     user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
     user32.RedrawWindow.restype = wintypes.BOOL
+
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, WPARAM, LPARAM]
+    user32.SendMessageW.restype = LRESULT
+
+    user32.SendMessageTimeoutW.argtypes = [
+        wintypes.HWND, wintypes.UINT, WPARAM, LPARAM,
+        wintypes.UINT, wintypes.UINT, ctypes.c_void_p
+    ]
+    user32.SendMessageTimeoutW.restype = LRESULT
 
     @WNDPROC
     def _host_wnd_proc(hwnd, msg, wparam, lparam):
@@ -368,70 +382,66 @@ class WinWallpaperEngine:
             return True
 
     # -----------------------------------------------------------------------
-    # 3. WorkerW Discovery & Layer Splitting with WS_CLIPCHILDREN
+    # 3. WorkerW Discovery & Layer Splitting with WS_CLIPCHILDREN & Icon Transparency
     # -----------------------------------------------------------------------
-    def _find_workerw_behind_icons(self) -> Optional[int]:
+    def ensure_workerw(self) -> int:
+        """
+        Locates the WorkerW window holding SHELLDLL_DefView (desktop icons),
+        enables WS_CLIPCHILDREN | WS_CLIPSIBLINGS so GDI paint cycles do not overwrite video,
+        and sets SysListView32 background and text colors to CLR_NONE for 100% transparent icon text.
+        """
         if sys.platform != "win32":
-            return None
-        found_workerw = ctypes.c_void_p(0)
+            return 0
+        self._progman_hwnd = user32.FindWindowW("Progman", None)
+
+        # Trigger WorkerW creation behind Progman
+        result = wintypes.DWORD(0)
+        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0, 0, SMTO_NORMAL, 1000, ctypes.byref(result))
+        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, ctypes.byref(result))
+
+        # Find WorkerW that holds SHELLDLL_DefView (WorkerW #1)
+        workerw_host = None
 
         def _enum_cb(hwnd, _lparam):
-            def_view = user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
-            if def_view:
-                workerw = user32.FindWindowExW(None, hwnd, "WorkerW", None)
-                if workerw:
-                    found_workerw.value = workerw
-                    return False
+            nonlocal workerw_host
+            shell_view = user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
+            if shell_view:
+                workerw_host = hwnd
+                return False
             return True
 
         cb = WNDENUMPROC(_enum_cb)
         user32.EnumWindows(cb, 0)
 
-        if not found_workerw.value:
-            def _find_any_workerw(hwnd, _lparam):
-                buf = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(hwnd, buf, 256)
-                if buf.value == "WorkerW":
-                    if not user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None):
-                        found_workerw.value = hwnd
-                        return False
-                return True
-            user32.EnumWindows(WNDENUMPROC(_find_any_workerw), 0)
+        if not workerw_host or not user32.IsWindow(workerw_host):
+            log.warning("Window holding SHELLDLL_DefView not found; fallback to Progman")
+            workerw_host = self._progman_hwnd
 
-        return found_workerw.value if found_workerw.value else None
-
-    def ensure_workerw(self) -> int:
-        if sys.platform != "win32":
-            return 0
-        self._progman_hwnd = user32.FindWindowW("Progman", None)
-
-        workerw = self._find_workerw_behind_icons()
-        if not workerw or not user32.IsWindow(workerw):
-            result = ctypes.c_ulonglong(0)
-            user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0, 0, SMTO_NORMAL, 1000, ctypes.byref(result))
-            user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, ctypes.byref(result))
-            workerw = self._find_workerw_behind_icons()
-
-        if not workerw:
-            log.warning("Dedicated WorkerW not found; using Progman as background target")
-            workerw = self._progman_hwnd
-
-        # Ensure WorkerW clips its child host_hwnd so Explorer never draws over video
-        style = user32.GetWindowLongPtrW(workerw, GWL_STYLE)
+        # Apply WS_CLIPCHILDREN & WS_CLIPSIBLINGS to workerw_host
+        style = user32.GetWindowLongPtrW(workerw_host, GWL_STYLE)
         new_style = style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
         if new_style != style:
-            user32.SetWindowLongPtrW(workerw, GWL_STYLE, new_style)
+            user32.SetWindowLongPtrW(workerw_host, GWL_STYLE, new_style)
             user32.SetWindowPos(
-                workerw, 0, 0, 0, 0, 0,
+                workerw_host, 0, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
             )
 
-        user32.ShowWindow(workerw, SW_SHOW)
-        self._worker_hwnd = workerw
-        return workerw
+        # Ensure Desktop Icon transparency (SysListView32)
+        shell_view = user32.FindWindowExW(workerw_host, None, "SHELLDLL_DefView", None)
+        if shell_view:
+            listview = user32.FindWindowExW(shell_view, None, "SysListView32", None)
+            if listview:
+                user32.SendMessageW(listview, LVM_SETBKCOLOR, 0, CLR_NONE)
+                user32.SendMessageW(listview, LVM_SETTEXTBKCOLOR, 0, CLR_NONE)
+                user32.RedrawWindow(listview, None, None, RDW_INVALIDATE | RDW_ERASE)
+
+        user32.ShowWindow(workerw_host, 1)  # SW_SHOWNORMAL
+        self._worker_hwnd = workerw_host
+        return workerw_host
 
     # -----------------------------------------------------------------------
-    # 4. Sacrificial Host Child HWND Creation (Custom Class)
+    # 4. Sacrificial Host Child HWND Creation (Positioned at HWND_BOTTOM)
     # -----------------------------------------------------------------------
     def _create_sacrificial_host_hwnd(self, parent_workerw: int) -> int:
         _ensure_host_class_registered()
@@ -441,11 +451,16 @@ class WinWallpaperEngine:
         width = max(1, rect.right - rect.left)
         height = max(1, rect.bottom - rect.top)
 
+        sw = user32.GetSystemMetrics(SM_CXSCREEN)
+        sh = user32.GetSystemMetrics(SM_CYSCREEN)
+        width = max(width, sw)
+        height = max(height, sh)
+
         hinstance = kernel32.GetModuleHandleW(None)
         hwnd = user32.CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOPARENTNOTIFY,
             _HOST_CLASS_NAME,
-            "DesktopSuiteMpvHost",
+            "DesktopSuiteWin7MpvHost",
             WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
             0, 0, width, height,
             parent_workerw,
@@ -457,12 +472,12 @@ class WinWallpaperEngine:
             raise ctypes.WinError()
 
         user32.SetParent(hwnd, parent_workerw)
-        user32.ShowWindow(hwnd, SW_SHOW)
+        # Position host_hwnd at HWND_BOTTOM inside parent_workerw (behind SHELLDLL_DefView)
         user32.SetWindowPos(
-            hwnd, HWND_TOP, 0, 0, width, height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
+            hwnd, HWND_BOTTOM, 0, 0, width, height,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
         )
-        log.info("Created sacrificial host HWND %s on parent WorkerW %s (%dx%d)", hwnd, parent_workerw, width, height)
+        log.info("Created sacrificial host HWND %s on parent WorkerW %s at HWND_BOTTOM (%dx%d)", hwnd, parent_workerw, width, height)
         return hwnd
 
     # -----------------------------------------------------------------------
@@ -488,7 +503,6 @@ class WinWallpaperEngine:
         if backend == "d3d11":
             vo_flags = [
                 "--vo=gpu",
-                "--gpu-api=d3d11",
                 "--gpu-context=d3d11",
                 "--d3d11-flip=no",          # Mandatory on Windows 7 DXGI 1.2
                 "--d3d11-sync-interval=1",

@@ -2966,6 +2966,12 @@ class MatrixTerminalTheme(ThemeBase):
     """
 
     name: str = "Matrix CLI"
+    clock_base_width: float = 480.0
+    clock_base_height: float = 80.0
+    date_base_width: float = 480.0
+    date_base_height: float = 50.0
+    vis_base_width: float = 320.0
+    vis_base_height: float = 60.0
 
     def draw_background(
         self,
@@ -3033,7 +3039,7 @@ class MatrixTerminalTheme(ThemeBase):
         cx = width / 2.0
 
         user_host = self._get_prompt_user_host()
-        txt = f"[{user_host} ~]$ {time_data.time_str}:00 █"
+        txt = f"[{user_host} ~]$ {time_data.hour:02d}:{time_data.minute:02d}:{time_data.second:02d} █"
         ctx.select_font_face("Share Tech Mono", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(28.0 * scale)
         self.set_hex_color(ctx, clock_color, alpha=0.96)

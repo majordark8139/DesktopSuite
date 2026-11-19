@@ -22,8 +22,6 @@ log = logging.getLogger(__name__)
 NUM_BANDS: int = 14
 _ALPHA: float = 0.42
 _PEAK_DECAY: float = 0.982
-_RMS_GATE: float = 0.010
-_SAMPLE_RATE: int = 22050
 _CHUNK_SAMPLES: int = 1024
 
 
@@ -67,96 +65,86 @@ class WinAudioStream:
         self.intensity = max(0.1, min(2.0, intensity))
 
     def _worker(self) -> None:
-        has_soundcard = False
-        recorder = None
-        try:
-            import soundcard as sc
-            spk = sc.default_speaker()
-            loopback_mic = None
-            if spk:
-                mics = sc.all_microphones(include_loopback=True)
-                for m in mics:
-                    if getattr(m, "isloopback", False) and spk.name in m.name:
-                        loopback_mic = m
-                        break
-                if not loopback_mic:
-                    for m in mics:
-                        if getattr(m, "isloopback", False):
-                            loopback_mic = m
-                            break
+        while not self._stop_event.is_set():
+            try:
+                import soundcard as sc
 
-            if loopback_mic:
-                # Windows 7 WASAPI loopback requires standard device sample rate & stereo (channels=2)
-                for sr in (44100, 48000, _SAMPLE_RATE):
-                    try:
-                        recorder = loopback_mic.recorder(samplerate=sr, channels=2)
-                        recorder.__enter__()
-                        has_soundcard = True
-                        log.info("WASAPI loopback audio recorder initialised on '%s' (%d Hz, 2ch)", loopback_mic.name, sr)
-                        break
-                    except Exception as sr_exc:
-                        log.debug("Failed samplerate %d: %s", sr, sr_exc)
-        except Exception as exc:
-            log.warning("WASAPI loopback not available (%s); falling back to synthetic generator", exc)
-
-        try:
-            while not self._stop_event.is_set():
-                if has_soundcard and recorder is not None:
-                    try:
-                        pcm = recorder.record(numframes=_CHUNK_SAMPLES)
-                        # Downmix stereo to mono for FFT pipeline
-                        if pcm.ndim > 1 and pcm.shape[1] > 1:
-                            chunk = np.mean(pcm, axis=1).astype(np.float32)
-                        elif pcm.ndim > 1:
-                            chunk = pcm[:, 0].astype(np.float32)
-                        else:
-                            chunk = pcm.astype(np.float32)
-                        self._process_chunk(chunk)
-                    except Exception as rec_exc:
-                        log.debug("Audio recording error: %s", rec_exc)
-                        self._fallback_step()
-                else:
+                speaker = sc.default_speaker()
+                if not speaker:
+                    log.warning("No default speaker found for WASAPI capture")
                     self._fallback_step()
-                    time.sleep(0.033)
-        finally:
-            if recorder is not None:
+                    time.sleep(0.5)
+                    continue
+
+                native_rate = getattr(speaker, "samplerate", None) or 48000
+                loopback_mic = None
                 try:
-                    recorder.__exit__(None, None, None)
+                    loopback_mic = sc.get_microphone(id=speaker.id, include_loopback=True)
                 except Exception:
                     pass
 
-    def _process_chunk(self, chunk: np.ndarray) -> None:
-        if len(chunk) < _CHUNK_SAMPLES:
-            return
+                if not loopback_mic:
+                    for m in sc.all_microphones(include_loopback=True):
+                        if getattr(m, "isloopback", False) and speaker.name in m.name:
+                            loopback_mic = m
+                            break
+                    if not loopback_mic:
+                        for m in sc.all_microphones(include_loopback=True):
+                            if getattr(m, "isloopback", False):
+                                loopback_mic = m
+                                break
 
-        rms = float(np.sqrt(np.mean(chunk ** 2)))
-        if rms < _RMS_GATE:
-            with self.lock:
-                self._smooth_bands *= 0.75
-                self._update_bars()
-            return
+                if not loopback_mic:
+                    log.warning("No loopback microphone endpoint found on WASAPI")
+                    self._fallback_step()
+                    time.sleep(0.5)
+                    continue
 
-        windowed = chunk[:_CHUNK_SAMPLES] * self._hanning
-        fft = np.abs(np.fft.rfft(windowed))[:_CHUNK_SAMPLES // 2]
+                log.info("Starting WASAPI loopback capture on '%s' (%s Hz)", loopback_mic.name, native_rate)
+                with loopback_mic.recorder(samplerate=native_rate, blocksize=_CHUNK_SAMPLES) as recorder:
+                    while not self._stop_event.is_set():
+                        data = recorder.record(numframes=_CHUNK_SAMPLES)
+                        if data.ndim > 1 and data.shape[1] > 1:
+                            mono_data = np.mean(data, axis=1).astype(np.float32)
+                        else:
+                            mono_data = data.flatten().astype(np.float32)
 
-        freq_bins = np.logspace(0.5, np.log10(len(fft) - 1), self.num_bands + 1).astype(int)
-        band_vals = np.zeros(self.num_bands, dtype=np.float32)
-        for i in range(self.num_bands):
-            lo, hi = max(0, freq_bins[i]), max(freq_bins[i] + 1, freq_bins[i + 1])
-            band_vals[i] = float(np.mean(fft[lo:hi])) if hi > lo else float(fft[lo])
+                        # Check for silence (pause / muted / inactive)
+                        if np.max(np.abs(mono_data)) < 1e-5:
+                            with self.lock:
+                                self._smooth_bands *= 0.85
+                                self._update_bars()
+                            continue
 
-        cur_peak = float(np.max(band_vals))
-        self._peak_history = max(self._peak_history * _PEAK_DECAY, cur_peak, 0.05)
-        normalized = np.clip(band_vals / self._peak_history, 0.0, 1.0)
-        shaped = (normalized ** 1.30) * (self.intensity / 0.30)
+                        # Windowed FFT calculation
+                        windowed = mono_data[:_CHUNK_SAMPLES] * self._hanning[:len(mono_data)]
+                        fft = np.abs(np.fft.rfft(windowed, n=_CHUNK_SAMPLES))[:_CHUNK_SAMPLES // 2]
 
-        # High frequency attenuation
-        weights = np.linspace(1.0, 0.60, self.num_bands, dtype=np.float32)
-        shaped *= weights
+                        # Group into log-spaced frequency bands across audible range (approx 45 Hz - 18 kHz)
+                        freq_bins = np.logspace(0.5, np.log10(len(fft) - 1), self.num_bands + 1).astype(int)
+                        band_vals = np.zeros(self.num_bands, dtype=np.float32)
+                        for i in range(self.num_bands):
+                            lo = max(0, freq_bins[i])
+                            hi = max(lo + 1, freq_bins[i + 1])
+                            band_vals[i] = float(np.mean(fft[lo:hi]))
 
-        with self.lock:
-            self._smooth_bands += _ALPHA * (shaped - self._smooth_bands)
-            self._update_bars()
+                        cur_peak = float(np.max(band_vals))
+                        self._peak_history = max(self._peak_history * _PEAK_DECAY, cur_peak, 0.05)
+                        normalized = np.clip(band_vals / self._peak_history, 0.0, 1.0)
+                        shaped = (normalized ** 1.30) * (self.intensity / 0.30)
+
+                        # High-frequency rolloff compensation
+                        weights = np.linspace(1.0, 0.65, self.num_bands, dtype=np.float32)
+                        shaped *= weights
+
+                        with self.lock:
+                            self._smooth_bands += _ALPHA * (shaped - self._smooth_bands)
+                            self._update_bars()
+
+            except Exception as exc:
+                log.debug("WASAPI worker loop exception: %s", exc)
+                self._fallback_step()
+                time.sleep(0.3)
 
     def _update_bars(self) -> None:
         left = self._smooth_bands[::-1]
