@@ -72,24 +72,48 @@ class WinAudioStream:
         try:
             import soundcard as sc
             spk = sc.default_speaker()
+            loopback_mic = None
             if spk:
-                recorder = sc.get_microphone(id=str(spk.name), include_loopback=True).recorder(
-                    samplerate=_SAMPLE_RATE, channels=1
-                )
-                recorder.__enter__()
-                has_soundcard = True
-                log.info("WASAPI loopback audio recorder initialised on %s", spk.name)
+                mics = sc.all_microphones(include_loopback=True)
+                for m in mics:
+                    if getattr(m, "isloopback", False) and spk.name in m.name:
+                        loopback_mic = m
+                        break
+                if not loopback_mic:
+                    for m in mics:
+                        if getattr(m, "isloopback", False):
+                            loopback_mic = m
+                            break
+
+            if loopback_mic:
+                # Windows 7 WASAPI loopback requires standard device sample rate & stereo (channels=2)
+                for sr in (44100, 48000, _SAMPLE_RATE):
+                    try:
+                        recorder = loopback_mic.recorder(samplerate=sr, channels=2)
+                        recorder.__enter__()
+                        has_soundcard = True
+                        log.info("WASAPI loopback audio recorder initialised on '%s' (%d Hz, 2ch)", loopback_mic.name, sr)
+                        break
+                    except Exception as sr_exc:
+                        log.debug("Failed samplerate %d: %s", sr, sr_exc)
         except Exception as exc:
-            log.info("WASAPI loopback not available (%s); falling back to synthetic generator", exc)
+            log.warning("WASAPI loopback not available (%s); falling back to synthetic generator", exc)
 
         try:
             while not self._stop_event.is_set():
                 if has_soundcard and recorder is not None:
                     try:
                         pcm = recorder.record(numframes=_CHUNK_SAMPLES)
-                        chunk = pcm[:, 0] if pcm.ndim > 1 else pcm
+                        # Downmix stereo to mono for FFT pipeline
+                        if pcm.ndim > 1 and pcm.shape[1] > 1:
+                            chunk = np.mean(pcm, axis=1).astype(np.float32)
+                        elif pcm.ndim > 1:
+                            chunk = pcm[:, 0].astype(np.float32)
+                        else:
+                            chunk = pcm.astype(np.float32)
                         self._process_chunk(chunk)
-                    except Exception:
+                    except Exception as rec_exc:
+                        log.debug("Audio recording error: %s", rec_exc)
                         self._fallback_step()
                 else:
                     self._fallback_step()

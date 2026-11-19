@@ -2979,6 +2979,47 @@ class MatrixTerminalTheme(ThemeBase):
             ctx.set_source_rgba(0.0, 0.0, 0.0, opacity)
             ctx.paint()
 
+    @staticmethod
+    def _get_prompt_user_host() -> str:
+        if sys.platform == "win32":
+            user = (os.environ.get("USERNAME") or "user").lower()
+            computer = (os.environ.get("COMPUTERNAME") or "win7").lower()
+            host = computer if computer and computer != user else "win7"
+            return f"{user}@{host}"
+        else:
+            user = (os.environ.get("USER") or "user").lower()
+            host = "mint"
+            try:
+                if os.path.isfile("/etc/os-release"):
+                    with open("/etc/os-release", "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.startswith("ID="):
+                                host = line.strip().split("=")[1].strip('"').lower()
+                                break
+            except Exception:
+                pass
+            return f"{user}@{host}"
+
+    @staticmethod
+    def _get_uptime_str() -> str:
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                millis = ctypes.windll.kernel32.GetTickCount64() if hasattr(ctypes.windll.kernel32, "GetTickCount64") else ctypes.windll.kernel32.GetTickCount()
+                total_min = int(millis // 60000)
+                hrs = total_min // 60
+                mins = total_min % 60
+                return f"{hrs:02d}:{mins:02d}"
+            else:
+                with open("/proc/uptime", "r") as f:
+                    uptime_seconds = float(f.readline().split()[0])
+                    total_min = int(uptime_seconds // 60)
+                    hrs = total_min // 60
+                    mins = total_min % 60
+                    return f"{hrs:02d}:{mins:02d}"
+        except Exception:
+            return "14:32"
+
     def draw_clock(
         self,
         ctx: cairo.Context,
@@ -2991,7 +3032,8 @@ class MatrixTerminalTheme(ThemeBase):
         clock_color = cfg.get("clock_color", "#20FF50")
         cx = width / 2.0
 
-        txt = f"[user@mint ~]$ {time_data.time_str}:00 █"
+        user_host = self._get_prompt_user_host()
+        txt = f"[{user_host} ~]$ {time_data.time_str}:00 █"
         ctx.select_font_face("Share Tech Mono", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(28.0 * scale)
         self.set_hex_color(ctx, clock_color, alpha=0.96)
@@ -3012,7 +3054,8 @@ class MatrixTerminalTheme(ThemeBase):
         date_color = cfg.get("date_color", "#D0D0D0")
         cx = width / 2.0
 
-        txt = f"UPTIME: 14:32 // {time_data.year}-{time_data.month:02d}-{time_data.day:02d} // TTY1"
+        uptime_val = self._get_uptime_str()
+        txt = f"UPTIME: {uptime_val} // {time_data.year}-{time_data.month:02d}-{time_data.day:02d} // TTY1"
         ctx.select_font_face("Share Tech Mono", cairo.FontSlant.NORMAL, cairo.FontWeight.NORMAL)
         ctx.set_font_size(13.0 * scale)
         self.set_hex_color(ctx, date_color, alpha=0.88)

@@ -263,25 +263,31 @@ class WinAutoPauseWatcher:
                     time.sleep(self.interval)
                     continue
 
-                buf = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(hwnd, buf, 256)
-                cls_name = buf.value
-
-                if cls_name in ("Progman", "WorkerW", "Shell_TrayWnd", "DesktopCanvasWindow", "DesktopSuiteWin7MpvHost"):
+                # Don't pause when our own Control Center or Canvas has focus
+                fg_pid = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(fg_pid))
+                if fg_pid.value == os.getpid():
                     should_pause = False
-                elif self.mode == "focus":
-                    should_pause = True
-                elif self.mode == "maximized":
-                    is_zoomed = bool(user32.IsZoomed(hwnd))
-                    rect = wintypes.RECT()
-                    user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    is_fullscreen = (
-                        rect.left <= 0 and rect.top <= 0 and
-                        rect.right >= sw and rect.bottom >= sh
-                    )
-                    should_pause = is_zoomed or is_fullscreen
                 else:
-                    should_pause = False
+                    buf = ctypes.create_unicode_buffer(256)
+                    user32.GetClassNameW(hwnd, buf, 256)
+                    cls_name = buf.value
+
+                    if cls_name in ("Progman", "WorkerW", "Shell_TrayWnd", "DesktopCanvasWindow", "DesktopSuiteWin7MpvHost"):
+                        should_pause = False
+                    elif self.mode == "focus":
+                        should_pause = True
+                    elif self.mode == "maximized":
+                        is_zoomed = bool(user32.IsZoomed(hwnd))
+                        rect = wintypes.RECT()
+                        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                        is_fullscreen = (
+                            rect.left <= 0 and rect.top <= 0 and
+                            rect.right >= sw and rect.bottom >= sh
+                        )
+                        should_pause = is_zoomed or is_fullscreen
+                    else:
+                        should_pause = False
 
                 if should_pause != self._is_paused:
                     if should_pause:
@@ -420,6 +426,7 @@ class WinWallpaperEngine:
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
             )
 
+        user32.ShowWindow(workerw, SW_SHOW)
         self._worker_hwnd = workerw
         return workerw
 
@@ -450,6 +457,7 @@ class WinWallpaperEngine:
             raise ctypes.WinError()
 
         user32.SetParent(hwnd, parent_workerw)
+        user32.ShowWindow(hwnd, SW_SHOW)
         user32.SetWindowPos(
             hwnd, HWND_TOP, 0, 0, width, height,
             SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
