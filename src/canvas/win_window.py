@@ -101,6 +101,7 @@ class WinDesktopCanvasWindow(QWidget):
 
     def set_theme(self, theme: Any) -> None:
         self.theme = theme
+        self._shared_surface.clear_transparent()
         self.update()
 
     def reload_config(self) -> None:
@@ -148,9 +149,8 @@ class WinDesktopCanvasWindow(QWidget):
         else:
             self._render_bars *= 0.85
 
-        # 3. Clear Cairo surface
-        self._ctx.set_operator(cairo.OPERATOR_CLEAR)
-        self._ctx.paint()
+        # 3. Clear shared surface (wipe RAM buffer to 0x00000000)
+        self._shared_surface.clear_transparent()
         self._ctx.set_operator(cairo.OPERATOR_OVER)
 
         # 4. Extract configuration snapshot
@@ -237,6 +237,7 @@ class WinDesktopCanvasWindow(QWidget):
         # 10. Blit Cairo memory buffer into QPainter (zero-copy shared surface)
         try:
             painter = QPainter(self)
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
             painter.drawImage(0, 0, self._shared_surface.qimage)
             painter.end()
         except Exception as exc:

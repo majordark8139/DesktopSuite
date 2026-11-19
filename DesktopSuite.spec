@@ -34,6 +34,7 @@ a = Analysis(
         'PyQt5.QtWidgets',
         'soundcard',
         'src.core.win7_font_engine',
+        'src.core.win7_single_instance',
         'src.wallpaper.win_engine',
         'src.canvas.win_window',
         'src.canvas.win_audio',

@@ -230,6 +230,16 @@ class SharedCairoQtSurface:
             QImage.Format_ARGB32_Premultiplied
         )
 
+    def clear_transparent(self) -> None:
+        """
+        Wipes the shared ARGB32 RAM buffer to 0x00000000 (fully transparent)
+        at native C++ memset speed. Call this at the top of every render frame
+        and immediately upon switching themes.
+        """
+        self.cairo_surface.flush()
+        self.qimage.fill(0)
+        self.cairo_surface.mark_dirty()
+
     def create_context(self) -> Win7CairoContext:
         """Create a drop-in Win7CairoContext proxy operating on this surface."""
         return Win7CairoContext(self.cairo_surface, self.qimage, self.font_registry)

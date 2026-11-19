@@ -40,6 +40,11 @@ class WinAppController:
         if self._gui_app is None:
             self._gui_app = QApplication(sys.argv)
 
+        # Install inter-process activation filter for single-instance waking
+        from src.core.win7_single_instance import ActivateMessageFilter
+        self._msg_filter = ActivateMessageFilter(self.show_control_center)
+        self._gui_app.installNativeEventFilter(self._msg_filter)
+
         # Initialize bundled font registry with Qt FreeType engine
         self._font_registry = get_font_registry()
 

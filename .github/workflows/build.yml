@@ -44,21 +44,24 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pillow
 
-      - name: Install mpv for Windows
+      - name: Download & Install Windows 7 Native mpv Build
         shell: powershell
         run: |
-          choco install mpv -y --no-progress
           New-Item -ItemType Directory -Force -Path "assets\bin"
-          $mpvBin = (Get-Command mpv.exe -ErrorAction SilentlyContinue).Source
-          if (-not $mpvBin) {
-            $mpvBin = "C:\tools\mpv\mpv.exe"
+          $archivePath = "$env:TEMP\mpv-win7.7z"
+          Write-Host "Downloading verified Windows 7 SP1 x64 mpv build (2023-08-27)..."
+          curl.exe -L "https://downloads.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z" -o $archivePath
+          if (-not (Test-Path $archivePath) -or (Get-Item $archivePath).Length -lt 10000000) {
+            Write-Warning "First mirror failed, trying secondary mirror..."
+            curl.exe -L "https://master.dl.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z?viasf=1" -o $archivePath
           }
-          if (Test-Path $mpvBin) {
-            $mpvDir = Split-Path -Parent $mpvBin
-            Copy-Item "$mpvDir\*" -Destination "assets\bin\" -Recurse -Force
-            Write-Host "Bundled all mpv dependencies from $mpvDir into assets\bin"
+          Write-Host "Extracting Windows 7 mpv into assets\bin..."
+          7z x $archivePath -o"assets\bin" -y
+          if (Test-Path "assets\bin\mpv.exe") {
+            Write-Host "Successfully installed Windows 7 compatible mpv.exe into assets\bin"
+            Get-ChildItem "assets\bin" | Select-Object Name, Length
           } else {
-            Write-Warning "mpv.exe could not be found to bundle into assets\bin"
+            throw "assets\bin\mpv.exe was not found after extraction!"
           }
 
       - name: Run Headless Cairo Theme Verification on Windows

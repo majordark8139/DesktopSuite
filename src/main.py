@@ -110,6 +110,13 @@ if __name__ == "__main__":
                     print("[Desktop Suite] Cannot start wallpaper: no valid video_path configured.")
             sys.exit(0)
 
+        # Single-instance enforcement on Windows to prevent duplicate overlay canvases
+        from src.core.win7_single_instance import SingleInstanceGuard
+        _guard = SingleInstanceGuard()
+        if not _guard.acquire_or_activate_existing():
+            print("[Desktop Suite] Another instance is already running. Raising Control Center...")
+            sys.exit(0)
+
         # Launch Windows Native DesktopSuite
         from src.windows import run_windows
         is_daemon = "--daemon" in sys.argv or "--start-all" in sys.argv
