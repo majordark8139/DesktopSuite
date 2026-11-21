@@ -52,7 +52,11 @@ WS_CHILD = 0x40000000
 WS_VISIBLE = 0x10000000
 WS_CLIPSIBLINGS = 0x04000000
 WS_CLIPCHILDREN = 0x02000000
+WS_POPUP = 0x80000000
+WS_CAPTION = 0x00C00000
+WS_THICKFRAME = 0x00040000
 
+WS_EX_APPWINDOW = 0x00040000
 WS_EX_NOPARENTNOTIFY = 0x00000004
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
@@ -70,6 +74,8 @@ SWP_FRAMECHANGED = 0x0020
 SWP_SHOWWINDOW = 0x0040
 
 SMTO_NORMAL = 0x0000
+SPI_GETCLIENTAREAANIMATION = 0x1042
+SPI_SETCLIENTAREAANIMATION = 0x1043
 SPI_SETDESKWALLPAPER = 0x0014
 SPIF_SENDCHANGE = 0x0002
 
@@ -149,7 +155,10 @@ if sys.platform == "win32":
     user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.GetClientRect.restype = wintypes.BOOL
 
-    user32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint, wintypes.LPCWSTR, ctypes.c_uint]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+
+    user32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
     user32.SystemParametersInfoW.restype = wintypes.BOOL
 
     user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
@@ -326,8 +335,10 @@ class WinWallpaperEngine:
         self._proc: Optional[subprocess.Popen] = None
         self._ipc: Optional[WinMpvIPC] = None
         self._autopause: Optional[WinAutoPauseWatcher] = None
+        self.mpv_hwnd: Optional[int] = None
         self.host_hwnd: Optional[int] = None
         self._worker_hwnd: Optional[int] = None
+        self._defview_parent_hwnd: Optional[int] = None
         self._progman_hwnd: Optional[int] = None
         self.ipc_pipe_path: Optional[str] = None
         self.last_error_message: str = ""
@@ -382,106 +393,99 @@ class WinWallpaperEngine:
             return True
 
     # -----------------------------------------------------------------------
-    # 3. WorkerW Discovery & Layer Splitting with WS_CLIPCHILDREN & Icon Transparency
+    # 3. WorkerW Discovery & Layer Splitting (Targeting WorkerW #2 on Windows 7)
     # -----------------------------------------------------------------------
     def ensure_workerw(self) -> int:
         """
-        Locates the WorkerW window holding SHELLDLL_DefView (desktop icons),
-        enables WS_CLIPCHILDREN | WS_CLIPSIBLINGS so GDI paint cycles do not overwrite video,
-        and sets SysListView32 background and text colors to CLR_NONE for 100% transparent icon text.
+        Locates WorkerW #2 on Windows 7 SP1 (the empty sibling immediately behind
+        WorkerW #1 holding SHELLDLL_DefView).
+        Ensures client area animation is active so Explorer creates WorkerW #2,
+        sends 0x052C to Progman, and sets desktop icon transparency (SysListView32).
         """
         if sys.platform != "win32":
             return 0
+
+        # 1. Ensure Windows 7 Client-Area Animation is enabled before 0x052C
+        anim_enabled = wintypes.BOOL(0)
+        user32.SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(anim_enabled), 0)
+        if not anim_enabled.value:
+            log.info("Enabling Windows 7 client area animation (SPI_SETCLIENTAREAANIMATION)")
+            user32.SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, ctypes.c_void_p(1), 0)
+
+        # 2. Trigger Explorer to split Progman -> WorkerW #1 + WorkerW #2
         self._progman_hwnd = user32.FindWindowW("Progman", None)
+        result = ctypes.c_ulong(0)
+        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0x0D, 0x01, SMTO_NORMAL, 1000, ctypes.byref(result))
+        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0x00, 0x00, SMTO_NORMAL, 1000, ctypes.byref(result))
 
-        # Trigger WorkerW creation behind Progman
-        result = wintypes.DWORD(0)
-        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0, 0, SMTO_NORMAL, 1000, ctypes.byref(result))
-        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, ctypes.byref(result))
+        # 3. Enumerate top-level windows to find WorkerW #1, then grab WorkerW #2 behind it
+        workerw_defview = 0
+        workerw_target = 0
 
-        # Find WorkerW that holds SHELLDLL_DefView (WorkerW #1)
-        workerw_host = None
-
-        def _enum_cb(hwnd, _lparam):
-            nonlocal workerw_host
-            shell_view = user32.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None)
-            if shell_view:
-                workerw_host = hwnd
+        def _enum_cb(top_hwnd, _lparam):
+            nonlocal workerw_defview, workerw_target
+            defview = user32.FindWindowExW(top_hwnd, 0, "SHELLDLL_DefView", None)
+            if defview:
+                workerw_defview = top_hwnd
+                # Grab the sibling WorkerW immediately BEHIND WorkerW #1
+                workerw_target = user32.FindWindowExW(0, top_hwnd, "WorkerW", None)
                 return False
             return True
 
         cb = WNDENUMPROC(_enum_cb)
         user32.EnumWindows(cb, 0)
 
-        if not workerw_host or not user32.IsWindow(workerw_host):
-            log.warning("Window holding SHELLDLL_DefView not found; fallback to Progman")
-            workerw_host = self._progman_hwnd
+        # Fallback if sibling WorkerW wasn't immediately following
+        if not workerw_target or not user32.IsWindow(workerw_target):
+            def _find_empty_worker(hwnd, _lparam):
+                nonlocal workerw_target
+                buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, buf, 256)
+                if buf.value == "WorkerW":
+                    if not user32.FindWindowExW(hwnd, 0, "SHELLDLL_DefView", None):
+                        workerw_target = hwnd
+                        return False
+                return True
+            user32.EnumWindows(WNDENUMPROC(_find_empty_worker), 0)
 
-        # Apply WS_CLIPCHILDREN & WS_CLIPSIBLINGS to workerw_host
-        style = user32.GetWindowLongPtrW(workerw_host, GWL_STYLE)
-        new_style = style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
-        if new_style != style:
-            user32.SetWindowLongPtrW(workerw_host, GWL_STYLE, new_style)
-            user32.SetWindowPos(
-                workerw_host, 0, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
-            )
+        if not workerw_target or not user32.IsWindow(workerw_target):
+            log.warning("Empty WorkerW not found; fallback to workerw_defview or Progman")
+            workerw_target = workerw_defview or self._progman_hwnd
+
+        # Apply WS_CLIPCHILDREN & WS_CLIPSIBLINGS to workerw_target
+        if workerw_target and user32.IsWindow(workerw_target):
+            style = user32.GetWindowLongPtrW(workerw_target, GWL_STYLE)
+            new_style = style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+            if new_style != style:
+                user32.SetWindowLongPtrW(workerw_target, GWL_STYLE, new_style)
+                user32.SetWindowPos(
+                    workerw_target, 0, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+                )
 
         # Ensure Desktop Icon transparency (SysListView32)
-        shell_view = user32.FindWindowExW(workerw_host, None, "SHELLDLL_DefView", None)
-        if shell_view:
-            listview = user32.FindWindowExW(shell_view, None, "SysListView32", None)
-            if listview:
-                user32.SendMessageW(listview, LVM_SETBKCOLOR, 0, CLR_NONE)
-                user32.SendMessageW(listview, LVM_SETTEXTBKCOLOR, 0, CLR_NONE)
-                user32.RedrawWindow(listview, None, None, RDW_INVALIDATE | RDW_ERASE)
+        if workerw_defview:
+            shell_view = user32.FindWindowExW(workerw_defview, 0, "SHELLDLL_DefView", None)
+            if shell_view:
+                listview = user32.FindWindowExW(shell_view, 0, "SysListView32", None)
+                if listview:
+                    user32.SendMessageW(listview, LVM_SETBKCOLOR, 0, CLR_NONE)
+                    user32.SendMessageW(listview, LVM_SETTEXTBKCOLOR, 0, CLR_NONE)
+                    user32.RedrawWindow(listview, None, None, RDW_INVALIDATE | RDW_ERASE)
 
-        user32.ShowWindow(workerw_host, 1)  # SW_SHOWNORMAL
-        self._worker_hwnd = workerw_host
-        return workerw_host
+        if workerw_target and user32.IsWindow(workerw_target):
+            user32.ShowWindow(workerw_target, 1)  # SW_SHOWNORMAL
 
-    # -----------------------------------------------------------------------
-    # 4. Sacrificial Host Child HWND Creation (Positioned at HWND_BOTTOM)
-    # -----------------------------------------------------------------------
-    def _create_sacrificial_host_hwnd(self, parent_workerw: int) -> int:
-        _ensure_host_class_registered()
-
-        rect = wintypes.RECT()
-        user32.GetClientRect(parent_workerw, ctypes.byref(rect))
-        width = max(1, rect.right - rect.left)
-        height = max(1, rect.bottom - rect.top)
-
-        sw = user32.GetSystemMetrics(SM_CXSCREEN)
-        sh = user32.GetSystemMetrics(SM_CYSCREEN)
-        width = max(width, sw)
-        height = max(height, sh)
-
-        hinstance = kernel32.GetModuleHandleW(None)
-        hwnd = user32.CreateWindowExW(
-            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_NOPARENTNOTIFY,
-            _HOST_CLASS_NAME,
-            "DesktopSuiteWin7MpvHost",
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-            0, 0, width, height,
-            parent_workerw,
-            None,
-            hinstance,
-            None,
+        self._worker_hwnd = workerw_target
+        self._defview_parent_hwnd = workerw_defview
+        log.info(
+            "Windows desktop hierarchy: Progman=0x%X, WorkerW#1(DefView)=0x%X, TargetWorkerW#2=0x%X",
+            self._progman_hwnd or 0, workerw_defview or 0, workerw_target or 0
         )
-        if not hwnd:
-            raise ctypes.WinError()
-
-        user32.SetParent(hwnd, parent_workerw)
-        # Position host_hwnd at HWND_BOTTOM inside parent_workerw (behind SHELLDLL_DefView)
-        user32.SetWindowPos(
-            hwnd, HWND_BOTTOM, 0, 0, width, height,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
-        )
-        log.info("Created sacrificial host HWND %s on parent WorkerW %s at HWND_BOTTOM (%dx%d)", hwnd, parent_workerw, width, height)
-        return hwnd
+        return workerw_target
 
     # -----------------------------------------------------------------------
-    # 5. Start / Stop / Restart Control
+    # 4. Start / Stop / Restart Control (Top-Level Spawn + WorkerW #2 Reparenting)
     # -----------------------------------------------------------------------
     def is_running(self) -> bool:
         if self._proc is not None and self._proc.poll() is None:
@@ -491,7 +495,7 @@ class WinWallpaperEngine:
     def _build_cmd(
         self,
         mpv_bin: str,
-        host_hwnd: int,
+        mpv_title: str,
         video_path: str,
         backend: str,
         speed: float,
@@ -500,29 +504,30 @@ class WinWallpaperEngine:
         fit_mode: str,
         fps_limit: str,
     ) -> list[str]:
-        if backend == "d3d11":
+        if backend == "direct3d":
+            # Direct3D 9Ex + zero-copy DXVA2: rock-solid on Intel HD 4400 / Haswell Win7 SP1
+            vo_flags = [
+                "--vo=direct3d",
+                "--hwdec=dxva2",
+            ]
+        else:
+            # D3D11 fallback
             vo_flags = [
                 "--vo=gpu",
                 "--gpu-context=d3d11",
                 "--d3d11-flip=no",          # Mandatory on Windows 7 DXGI 1.2
                 "--d3d11-sync-interval=1",
-                "--hwdec=dxva2-copy",       # Stable hardware decode on Intel HD 4400
+                "--hwdec=dxva2-copy",
                 "--profile=fast",
                 "--scale=bilinear",
                 "--cscale=bilinear",
                 "--dscale=bilinear",
                 "--deband=no",
             ]
-        else:
-            # Direct3D 9Ex fallback: minimal RAM, works with or without Aero
-            vo_flags = [
-                "--vo=direct3d",
-                "--hwdec=dxva2-copy",
-            ]
 
         cmd = [
             mpv_bin,
-            f"--wid={int(host_hwnd)}",
+            f"--title={mpv_title}",
             *vo_flags,
             "--loop-file=inf",
             "--cache=no",
@@ -530,6 +535,8 @@ class WinWallpaperEngine:
             "--no-osc",
             "--no-osd-bar",
             "--no-border",
+            "--force-window=immediate",
+            "--no-taskbar-progress",
             "--no-window-dragging",
             "--no-input-default-bindings",
             "--no-input-cursor",
@@ -581,25 +588,27 @@ class WinWallpaperEngine:
             log.warning("WinWallpaperEngine invoked on non-Windows platform")
             return False
 
-        workerw = self.ensure_workerw()
-        aero_active = self.is_dwm_aero_enabled()
+        workerw_target = self.ensure_workerw()
+        if not workerw_target:
+            self.last_error_message = "Failed to locate Explorer desktop WorkerW target window."
+            log.error(self.last_error_message)
+            return False
 
-        # Try d3d11 first if Aero is active, otherwise direct3d
-        backends = ["d3d11", "direct3d"] if aero_active else ["direct3d"]
+        rect = wintypes.RECT()
+        user32.GetClientRect(workerw_target, ctypes.byref(rect))
+        screen_w = max(rect.right - rect.left, user32.GetSystemMetrics(SM_CXSCREEN))
+        screen_h = max(rect.bottom - rect.top, user32.GetSystemMetrics(SM_CYSCREEN))
+
+        backends = ["direct3d", "d3d11"]
 
         for backend in backends:
-            try:
-                self.host_hwnd = self._create_sacrificial_host_hwnd(workerw)
-            except Exception as exc:
-                log.error("Failed to create sacrificial host HWND: %s", exc)
-                self.host_hwnd = workerw
-
             unique_id = uuid.uuid4().hex[:8]
+            mpv_title = f"DesktopSuiteBgMpv_{unique_id}"
             self.ipc_pipe_path = rf"\\.\pipe\mpv-livewal-{unique_id}"
             self._ipc = WinMpvIPC(self.ipc_pipe_path)
 
             cmd = self._build_cmd(
-                mpv_bin, self.host_hwnd, video_path, backend,
+                mpv_bin, mpv_title, video_path, backend,
                 speed, volume, mute, fit_mode, fps_limit
             )
 
@@ -613,46 +622,84 @@ class WinWallpaperEngine:
                 )
             except Exception as exc:
                 log.error("Failed to spawn mpv process: %s", exc)
-                self._destroy_host_only()
                 continue
 
-            # Health-check startup for 0.6 seconds to catch instant crashes
-            time.sleep(0.6)
+            # Poll for mpv top-level window creation (up to 3.0 seconds)
+            mpv_hwnd = None
+            start_poll = time.time()
+            while time.time() - start_poll < 3.0:
+                if self._proc.poll() is not None:
+                    break
+                found = user32.FindWindowW(None, mpv_title)
+                if found and user32.IsWindow(found):
+                    mpv_hwnd = found
+                    break
+                time.sleep(0.05)
+
+            if mpv_hwnd and self._proc.poll() is None:
+                try:
+                    # 1. Adjust window style: strip popup/caption/thickframe, make WS_CHILD | WS_VISIBLE
+                    style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)
+                    style = (style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_VISIBLE
+                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, style)
+
+                    # 2. Adjust extended style: strip WS_EX_APPWINDOW, add WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                    exstyle = user32.GetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE)
+                    exstyle = (exstyle & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE, exstyle)
+
+                    # 3. Reparent into WorkerW #2
+                    user32.SetParent(mpv_hwnd, workerw_target)
+
+                    # 4. Position and size to cover desktop client area (SWP_NOZORDER | SWP_SHOWWINDOW = 0x0044)
+                    user32.SetWindowPos(
+                        mpv_hwnd, 0, 0, 0, screen_w, screen_h,
+                        SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED
+                    )
+
+                    self.mpv_hwnd = mpv_hwnd
+                    self.host_hwnd = mpv_hwnd
+                    log.info(
+                        "mpv window 0x%X successfully reparented into WorkerW #2 (0x%X) on backend %s (PID %s)",
+                        mpv_hwnd, workerw_target, backend, self._proc.pid
+                    )
+
+                    self._autopause = WinAutoPauseWatcher(self._ipc, mode=autopause)
+                    self._autopause.start()
+                    return True
+                except Exception as exc:
+                    log.error("Failed to reparent mpv window: %s", exc)
+
+            # Process exited or failed window creation
             rc = self._proc.poll()
-            if rc is None:
-                log.info("mpv successfully running on %s backend (PID %s, pipe %s)", backend, self._proc.pid, self.ipc_pipe_path)
-                self._autopause = WinAutoPauseWatcher(self._ipc, mode=autopause)
-                self._autopause.start()
-                return True
-
-            # Process exited immediately
-            unsigned_rc = rc & 0xFFFFFFFF
             self._proc = None
-            self._destroy_host_only()
+            self._destroy_mpv_window()
 
-            if unsigned_rc == STATUS_ENTRYPOINT_NOT_FOUND:
-                self.last_error_message = (
-                    "mpv.exe is incompatible with Windows 7 (STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139). "
-                    "Use the bundled Windows 7 compatible mpv build (2023-08-27 / 2023-09-17)."
-                )
-                log.error(self.last_error_message)
-                return False
-
-            log.warning("Backend %s failed with exit code %s; trying fallback...", backend, rc)
+            if rc is not None:
+                unsigned_rc = rc & 0xFFFFFFFF
+                if unsigned_rc == STATUS_ENTRYPOINT_NOT_FOUND:
+                    self.last_error_message = (
+                        "mpv.exe is incompatible with Windows 7 (STATUS_ENTRYPOINT_NOT_FOUND 0xC0000139). "
+                        "Use the bundled Windows 7 compatible mpv build (2023-08-27 / 2023-09-17)."
+                    )
+                    log.error(self.last_error_message)
+                    return False
+                log.warning("Backend %s failed with exit code %s; trying fallback...", backend, rc)
 
         self.last_error_message = f"mpv failed to initialize video output. Check {self.log_path}"
         log.error(self.last_error_message)
         self.stop(restore_wallpaper=True)
         return False
 
-    def _destroy_host_only(self) -> None:
-        if sys.platform == "win32" and self.host_hwnd and user32.IsWindow(self.host_hwnd):
-            user32.DestroyWindow(self.host_hwnd)
+    def _destroy_mpv_window(self) -> None:
+        if sys.platform == "win32" and self.mpv_hwnd and user32.IsWindow(self.mpv_hwnd):
+            user32.DestroyWindow(self.mpv_hwnd)
+        self.mpv_hwnd = None
         self.host_hwnd = None
 
     def stop(self, restore_wallpaper: bool = True) -> None:
         """
-        Cleanly terminates mpv, destroys sacrificial host HWND, and repaints desktop.
+        Cleanly terminates mpv, destroys mpv child window, and restores desktop wallpaper.
         """
         if self._autopause:
             self._autopause.stop()
@@ -674,7 +721,7 @@ class WinWallpaperEngine:
 
         self._ipc = None
         self.ipc_pipe_path = None
-        self._destroy_host_only()
+        self._destroy_mpv_window()
 
         if restore_wallpaper and sys.platform == "win32":
             self.refresh_desktop_wallpaper()
@@ -693,13 +740,13 @@ class WinWallpaperEngine:
         return self.start(video_path, speed, volume, mute, fit_mode, fps_limit, autopause)
 
     def refresh_desktop_wallpaper(self) -> None:
-        """Repaint the static desktop wallpaper and force repaint of WorkerW and Progman."""
+        """Repaint the static desktop wallpaper and force repaint of WorkerW windows and Progman."""
         if sys.platform != "win32":
             return
         try:
             user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, None, SPIF_SENDCHANGE)
             flags = RDW_ERASE | RDW_INVALIDATE | RDW_INTERNALPAINT | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
-            for hwnd in (self._worker_hwnd, self._progman_hwnd):
+            for hwnd in (self._worker_hwnd, self._defview_parent_hwnd, self._progman_hwnd):
                 if hwnd and user32.IsWindow(hwnd):
                     user32.RedrawWindow(hwnd, None, None, flags)
         except Exception as exc:
