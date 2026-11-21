@@ -435,35 +435,7 @@ class WinWallpaperEngine:
         cb = WNDENUMPROC(_enum_cb)
         user32.EnumWindows(cb, 0)
 
-        # Fallback if sibling WorkerW wasn't immediately following
-        if not workerw_target or not user32.IsWindow(workerw_target):
-            def _find_empty_worker(hwnd, _lparam):
-                nonlocal workerw_target
-                buf = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(hwnd, buf, 256)
-                if buf.value == "WorkerW":
-                    if not user32.FindWindowExW(hwnd, 0, "SHELLDLL_DefView", None):
-                        workerw_target = hwnd
-                        return False
-                return True
-            user32.EnumWindows(WNDENUMPROC(_find_empty_worker), 0)
-
-        if not workerw_target or not user32.IsWindow(workerw_target):
-            log.warning("Empty WorkerW not found; fallback to workerw_defview or Progman")
-            workerw_target = workerw_defview or self._progman_hwnd
-
-        # Apply WS_CLIPCHILDREN & WS_CLIPSIBLINGS to workerw_target
-        if workerw_target and user32.IsWindow(workerw_target):
-            style = user32.GetWindowLongPtrW(workerw_target, GWL_STYLE)
-            new_style = style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
-            if new_style != style:
-                user32.SetWindowLongPtrW(workerw_target, GWL_STYLE, new_style)
-                user32.SetWindowPos(
-                    workerw_target, 0, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
-                )
-
-        # Ensure Desktop Icon transparency (SysListView32)
+        # Ensure Desktop Icon transparency (SysListView32) on WorkerW #1
         if workerw_defview:
             shell_view = user32.FindWindowExW(workerw_defview, 0, "SHELLDLL_DefView", None)
             if shell_view:
@@ -473,16 +445,29 @@ class WinWallpaperEngine:
                     user32.SendMessageW(listview, LVM_SETTEXTBKCOLOR, 0, CLR_NONE)
                     user32.RedrawWindow(listview, None, None, RDW_INVALIDATE | RDW_ERASE)
 
-        if workerw_target and user32.IsWindow(workerw_target):
-            user32.ShowWindow(workerw_target, 1)  # SW_SHOWNORMAL
+        # 4. Find WorkerW #2 (the top-level WorkerW sibling positioned AFTER workerw_defview)
+        target_workerw = user32.FindWindowExW(0, workerw_defview, "WorkerW", None)
 
-        self._worker_hwnd = workerw_target
-        self._defview_parent_hwnd = workerw_defview
-        log.info(
-            "Windows desktop hierarchy: Progman=0x%X, WorkerW#1(DefView)=0x%X, TargetWorkerW#2=0x%X",
-            self._progman_hwnd or 0, workerw_defview or 0, workerw_target or 0
-        )
-        return workerw_target
+        if target_workerw and user32.IsWindow(target_workerw):
+            log.info(f"Successfully isolated Desktop Wallpaper Target WorkerW #2: {hex(target_workerw)}")
+            # Apply WS_CLIPCHILDREN | WS_CLIPSIBLINGS to target_workerw
+            style = user32.GetWindowLongPtrW(target_workerw, GWL_STYLE)
+            new_style = style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+            if new_style != style:
+                user32.SetWindowLongPtrW(target_workerw, GWL_STYLE, new_style)
+                user32.SetWindowPos(
+                    target_workerw, 0, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+                )
+            user32.ShowWindow(target_workerw, 1)  # SW_SHOWNORMAL
+            self._worker_hwnd = target_workerw
+            self._defview_parent_hwnd = workerw_defview
+            return target_workerw
+        else:
+            log.warning("WorkerW #2 sibling not found; falling back safely to Progman (never touching Taskbar).")
+            self._worker_hwnd = self._progman_hwnd
+            self._defview_parent_hwnd = workerw_defview
+            return self._progman_hwnd
 
     # -----------------------------------------------------------------------
     # 4. Start / Stop / Restart Control (Top-Level Spawn + WorkerW #2 Reparenting)
@@ -569,7 +554,7 @@ class WinWallpaperEngine:
         mute: bool = True,
         fit_mode: str = "fill",
         fps_limit: str = "native",
-        autopause: str = "focus",
+        autopause: str = "maximized",
     ) -> bool:
         self.stop(restore_wallpaper=False)
 
@@ -651,10 +636,10 @@ class WinWallpaperEngine:
                     # 3. Reparent into WorkerW #2
                     user32.SetParent(mpv_hwnd, workerw_target)
 
-                    # 4. Position and size to cover desktop client area (SWP_NOZORDER | SWP_SHOWWINDOW = 0x0044)
+                    # 4. Position and size to cover desktop client area
                     user32.SetWindowPos(
                         mpv_hwnd, 0, 0, 0, screen_w, screen_h,
-                        SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW
                     )
 
                     self.mpv_hwnd = mpv_hwnd

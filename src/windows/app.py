@@ -111,7 +111,7 @@ class WinAppController:
             mute=bool(wp.get("mute", True)),
             fit_mode=wp.get("fit_mode", "fill"),
             fps_limit=wp.get("fps_limit", "native"),
-            autopause=wp.get("autopause", "focus"),
+            autopause=wp.get("autopause", "maximized"),
         )
         if started and self.canvas:
             self.canvas.lower_to_desktop()

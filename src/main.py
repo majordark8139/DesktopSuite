@@ -64,6 +64,17 @@ if str(_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if sys.platform == "win32":
+        import tempfile
+        _log_file = os.path.join(tempfile.gettempdir(), "desktopsuite.log")
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            handlers=[
+                logging.FileHandler(_log_file, mode="a", encoding="utf-8"),
+                logging.StreamHandler(sys.stdout),
+            ],
+        )
+
         # Force Qt FreeType font engine on Windows 7 before any Qt modules load
         from src.core.win7_font_engine import enable_qt_freetype_on_win7
         enable_qt_freetype_on_win7()
@@ -100,7 +111,7 @@ if __name__ == "__main__":
                         mute=bool(wp.get("mute", True)),
                         fit_mode=wp.get("fit_mode", "fill"),
                         fps_limit=wp.get("fps_limit", "native"),
-                        autopause=wp.get("autopause", "focus"),
+                        autopause=wp.get("autopause", "maximized"),
                     )
                     if started:
                         print(f"[Desktop Suite] Wallpaper started ({path}).")
