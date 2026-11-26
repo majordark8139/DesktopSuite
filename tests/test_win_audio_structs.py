@@ -58,7 +58,7 @@ class TestWinAudioStructsAndFonts(unittest.TestCase):
 
 try:
     import cairo as _cairo  # noqa: F401
-    from PyQt5.QtGui import QImage, QPainter
+    from PyQt5.QtGui import QImage, QPaintEvent, QPainter
     from PyQt5.QtWidgets import QApplication
     _HAS_CAIRO_QT = True
 except Exception:
@@ -189,8 +189,9 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             win._timer.stop()
             win._on_tick()
             self.assertEqual(win._static_rebuilds, 1)
-            win.repaint()
+            win.paintEvent(QPaintEvent(win.rect()))
             first_paints = win._paint_count
+            self.assertEqual(first_paints, 1)
 
             # Idle & silent tick should skip full repaints and never rebuild static text
             win._on_tick()
@@ -202,9 +203,16 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             win._on_tick()
             self.assertEqual(win._static_rebuilds, 1)
             self.assertFalse(win._vis_dirty_rect.isEmpty())
-            win.repaint(win._vis_dirty_rect)
+            win.paintEvent(QPaintEvent(win._vis_dirty_rect))
             self.assertGreater(win._paint_count, first_paints)
             self.assertEqual(win._static_rebuilds, 1)
+
+            blit = win._shared_surface.get_blit_qimage()
+            bar_px = blit.pixelColor(683, 452)
+            self.assertGreater(bar_px.alpha(), 150)
+            self.assertGreater(bar_px.red(), 150)
+            self.assertEqual(bar_px.green(), 0)
+            self.assertEqual(bar_px.blue(), 0)
         finally:
             win.stop()
             app.processEvents()
