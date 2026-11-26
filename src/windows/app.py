@@ -15,7 +15,11 @@ from typing import Optional
 from PyQt5.QtWidgets import QApplication
 
 from src.core.config import ConfigManager
-from src.core.diagnostics import install_qt_message_handler, log_environment_snapshot
+from src.core.diagnostics import (
+    install_qt_message_handler,
+    log_environment_snapshot,
+    uninstall_qt_message_handler,
+)
 from src.core.fonts import register_bundled_fonts
 from src.themes.registry import REGISTRY
 from src.wallpaper.win_engine import WinWallpaperEngine
@@ -87,6 +91,7 @@ class WinAppController:
         )
         self.canvas: Optional[WinDesktopCanvasWindow] = None
         self._gui_window = None
+        self._stopping = False
 
         self._gui_app.aboutToQuit.connect(self.stop_all)
 
@@ -194,9 +199,30 @@ class WinAppController:
         self.start_wallpaper()
 
     def stop_all(self) -> None:
+        if self._stopping:
+            return
+        self._stopping = True
         log.info("Controller.stop_all()")
         self.stop_canvas()
         self.stop_wallpaper()
+        if self._msg_filter is not None and self._gui_app is not None:
+            try:
+                self._gui_app.removeNativeEventFilter(self._msg_filter)
+            except Exception:
+                pass
+            self._msg_filter = None
+        if self._gui_window is not None:
+            try:
+                self._gui_window.close()
+                self._gui_window.deleteLater()
+            except Exception:
+                pass
+            self._gui_window = None
+        if self._gui_app is not None:
+            try:
+                self._gui_app.processEvents()
+            except Exception:
+                pass
 
     def show_control_center(self) -> None:
         from src.windows.control_center import create_control_center
@@ -216,8 +242,13 @@ class WinAppController:
         self.start_all()
         if not daemon:
             self.show_control_center()
-        rc = self._gui_app.exec_()
-        log.info("QApplication.exec_() exited with code %s", rc)
+        try:
+            rc = self._gui_app.exec_()
+            log.info("QApplication.exec_() exited with code %s", rc)
+        finally:
+            self.stop_all()
+            uninstall_qt_message_handler()
+            self._gui_app = None
 
 
 def run_windows(daemon: bool = False) -> None:

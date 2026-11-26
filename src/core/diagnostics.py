@@ -353,6 +353,20 @@ def install_qt_message_handler() -> None:
     logging.getLogger("DesktopSuite.Diagnostics").info("Installed PyQt5 qInstallMessageHandler")
 
 
+def uninstall_qt_message_handler() -> None:
+    """Restore default Qt message handler before Python/QApplication teardown."""
+    global _QT_HANDLER_INSTALLED, _PREV_QT_HANDLER
+    if not _QT_HANDLER_INSTALLED:
+        return
+    try:
+        from PyQt5.QtCore import qInstallMessageHandler
+        qInstallMessageHandler(None)
+    except Exception:
+        pass
+    _PREV_QT_HANDLER = None
+    _QT_HANDLER_INSTALLED = False
+
+
 def _on_process_exit() -> None:
     try:
         uptime = time.monotonic() - _START_TIME

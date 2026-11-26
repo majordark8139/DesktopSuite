@@ -55,5 +55,59 @@ class TestWinAudioStructsAndFonts(unittest.TestCase):
         self.assertEqual(ext.SubFormat, win_audio.KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)
 
 
+try:
+    import cairo as _cairo  # noqa: F401
+    from PyQt5.QtWidgets import QApplication
+    _HAS_CAIRO_QT = True
+except Exception:
+    _HAS_CAIRO_QT = False
+
+
+class TestSharedCairoQtSurface(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform == "win32" and _HAS_NUMPY and _HAS_CAIRO_QT,
+        "Requires win32 + PyQt5 + cairo + numpy",
+    )
+    def test_shared_surface_preserves_cairo_strokes_across_clears(self):
+        from src.core.win7_font_engine import BundledFontRegistry, SharedCairoQtSurface
+        from src.themes.base import TimeData
+        from src.themes.registry import OriginalCursiveTheme
+
+        app = QApplication.instance() or QApplication([])
+        self.assertIsNotNone(app)
+
+        surface = SharedCairoQtSurface(500, 120, BundledFontRegistry())
+        try:
+            theme = OriginalCursiveTheme()
+            cfg = {
+                "clock_color": "#FF0000",
+                "date_color": "#D0D0D0",
+                "visualizer_color": "#FF0000",
+                "scale": 1.0,
+                "visualizer_intensity": 0.65,
+            }
+            td = TimeData(is_24h=False)
+            bars = np.ones(27, dtype=np.float32)
+
+            for _ in range(3):
+                surface.clear_transparent()
+                ctx = surface.create_context()
+                theme.draw_clock(ctx, 500, 120, cfg, td)
+                theme.draw_visualizer(ctx, 500, 120, cfg, bars)
+
+            blit_img = surface.get_blit_qimage()
+            self.assertEqual(int(blit_img.bits()), surface._buf_addr)
+            self.assertEqual(blit_img.pixelColor(0, 0).alpha(), 0)
+
+            vis_px = blit_img.pixelColor(215, 108)
+            self.assertGreater(vis_px.alpha(), 150)
+            self.assertGreater(vis_px.red(), 150)
+            self.assertEqual(vis_px.green(), 0)
+            self.assertEqual(vis_px.blue(), 0)
+            del blit_img
+        finally:
+            surface.dispose()
+
+
 if __name__ == "__main__":
     unittest.main()

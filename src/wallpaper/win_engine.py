@@ -63,9 +63,11 @@ WS_POPUP = 0x80000000
 WS_CAPTION = 0x00C00000
 WS_THICKFRAME = 0x00040000
 
+WS_EX_TRANSPARENT = 0x00000020
 WS_EX_APPWINDOW = 0x00040000
 WS_EX_NOPARENTNOTIFY = 0x00000004
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 
 WM_ERASEBKGND = 0x0014
@@ -79,6 +81,11 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 SWP_FRAMECHANGED = 0x0020
 SWP_SHOWWINDOW = 0x0040
+
+SW_HIDE = 0
+SW_SHOWNORMAL = 1
+SW_SHOWNA = 8
+LWA_ALPHA = 0x00000002
 
 SMTO_NORMAL = 0x0000
 SPI_GETCLIENTAREAANIMATION = 0x1042
@@ -192,6 +199,95 @@ if sys.platform == "win32":
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
 
+    user32.GetLayeredWindowAttributes.argtypes = [
+        wintypes.HWND,
+        ctypes.POINTER(wintypes.COLORREF),
+        ctypes.POINTER(ctypes.c_ubyte),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    user32.GetLayeredWindowAttributes.restype = wintypes.BOOL
+
+    user32.SetLayeredWindowAttributes.argtypes = [
+        wintypes.HWND,
+        wintypes.COLORREF,
+        ctypes.c_ubyte,
+        wintypes.DWORD,
+    ]
+    user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+
+    _ole32 = ctypes.WinDLL("ole32")
+    _ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    _ole32.CoInitializeEx.restype = ctypes.c_long
+    _ole32.CoUninitialize.argtypes = []
+    _ole32.CoUninitialize.restype = None
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    def _com_guid(s: str) -> _GUID:
+        u = uuid.UUID(s)
+        return _GUID(u.fields[0], u.fields[1], u.fields[2], (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+
+    _ole32.CoCreateInstance.argtypes = [
+        ctypes.POINTER(_GUID),
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(_GUID),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    _ole32.CoCreateInstance.restype = ctypes.c_long
+
+    _CLSID_TaskbarList = _com_guid("{56FDF344-FD6D-11d0-958A-006097C9A090}")
+    _IID_ITaskbarList = _com_guid("{56FDF342-FD6D-11d0-958A-006097C9A090}")
+
+    def _com_vcall(obj_ptr, index, restype, *argtypes):
+        vtable = ctypes.cast(obj_ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+        fn = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtable[index])
+        return lambda *args: fn(obj_ptr, *args)
+
+    def _delete_taskbar_tab(hwnd: int) -> bool:
+        """Explicitly remove an HWND's button from Explorer's taskbar via ITaskbarList::DeleteTab."""
+        if not hwnd:
+            return False
+        hr_init = _ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
+        rpc_e_changed_mode = -2147417850  # 0x80010106
+        should_uninit = hr_init in (0, 1)
+        if hr_init < 0 and hr_init != rpc_e_changed_mode:
+            log.warning("ITaskbarList CoInitializeEx failed: 0x%08X", hr_init & 0xFFFFFFFF)
+            return False
+        taskbar_ptr = ctypes.c_void_p()
+        try:
+            hr = _ole32.CoCreateInstance(
+                ctypes.byref(_CLSID_TaskbarList), None, 0x1,
+                ctypes.byref(_IID_ITaskbarList), ctypes.byref(taskbar_ptr),
+            )
+            if hr < 0 or not taskbar_ptr.value:
+                log.warning("CoCreateInstance(CLSID_TaskbarList) failed: 0x%08X", hr & 0xFFFFFFFF)
+                return False
+            hr_hr = _com_vcall(taskbar_ptr, 3, ctypes.c_long)()
+            hr_del = _com_vcall(taskbar_ptr, 5, ctypes.c_long, wintypes.HWND)(hwnd)
+            log.info(
+                "ITaskbarList::DeleteTab(0x%X): HrInit=0x%08X DeleteTab=0x%08X",
+                hwnd, hr_hr & 0xFFFFFFFF, hr_del & 0xFFFFFFFF,
+            )
+            return hr_hr >= 0 and hr_del >= 0
+        except Exception as exc:
+            log.warning("ITaskbarList::DeleteTab(0x%X) exception: %s", hwnd, exc)
+            return False
+        finally:
+            if taskbar_ptr.value:
+                try:
+                    _com_vcall(taskbar_ptr, 2, wintypes.ULONG)()
+                except Exception:
+                    pass
+            if should_uninit:
+                _ole32.CoUninitialize()
+
     @WNDPROC
     def _host_wnd_proc(hwnd, msg, wparam, lparam):
         if msg == WM_ERASEBKGND:
@@ -279,10 +375,17 @@ class WinAutoPauseWatcher:
     applications are maximized or fullscreen, saving GPU and battery.
     """
 
-    def __init__(self, ipc: WinMpvIPC, mode: str = "focus", interval: float = 0.5) -> None:
+    def __init__(
+        self,
+        ipc: WinMpvIPC,
+        mode: str = "focus",
+        interval: float = 0.5,
+        mpv_pid: Optional[int] = None,
+    ) -> None:
         self.ipc = ipc
         self.mode = mode
         self.interval = interval
+        self.mpv_pid = mpv_pid
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._is_paused = False
@@ -316,7 +419,7 @@ class WinAutoPauseWatcher:
                     time.sleep(self.interval)
                     continue
 
-                # Don't pause when our own Control Center or Canvas has focus
+                # Don't pause when our own Control Center, Canvas, or mpv has focus
                 fg_pid = wintypes.DWORD(0)
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(fg_pid))
                 cls_buf = ctypes.create_unicode_buffer(256)
@@ -328,10 +431,13 @@ class WinAutoPauseWatcher:
                 is_zoomed = False
                 fg_rect = (0, 0, 0, 0)
 
-                if fg_pid.value == os.getpid():
+                if fg_pid.value == os.getpid() or (self.mpv_pid and fg_pid.value == self.mpv_pid):
                     should_pause = False
                 else:
-                    if cls_name in ("Progman", "WorkerW", "Shell_TrayWnd", "DesktopCanvasWindow", "DesktopSuiteWin7MpvHost"):
+                    if cls_name in (
+                        "Progman", "WorkerW", "Shell_TrayWnd",
+                        "DesktopCanvasWindow", "DesktopSuiteWin7MpvHost", "mpv",
+                    ):
                         should_pause = False
                     elif self.mode == "focus":
                         should_pause = True
@@ -382,6 +488,7 @@ class WinWallpaperEngine:
         self.mpv_hwnd: Optional[int] = None
         self.host_hwnd: Optional[int] = None
         self._worker_hwnd: Optional[int] = None
+        self._worker_orig_exstyle: Optional[int] = None
         self._defview_parent_hwnd: Optional[int] = None
         self._progman_hwnd: Optional[int] = None
         self.ipc_pipe_path: Optional[str] = None
@@ -522,6 +629,7 @@ class WinWallpaperEngine:
 
         # 4. Find WorkerW #2 (the top-level WorkerW sibling positioned AFTER workerw_defview)
         target_workerw = user32.FindWindowExW(0, workerw_defview, "WorkerW", None)
+        self._worker_orig_exstyle = None
 
         if target_workerw and user32.IsWindow(target_workerw):
             log.info(f"Successfully isolated Desktop Wallpaper Target WorkerW #2: {hex(target_workerw)}")
@@ -530,17 +638,78 @@ class WinWallpaperEngine:
             new_style = style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
             if new_style != style:
                 user32.SetWindowLongPtrW(target_workerw, GWL_STYLE, new_style)
-                user32.SetWindowPos(
-                    target_workerw, 0, 0, 0, 0, 0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
+
+            # Win7 Explorer sets WS_EX_LAYERED | WS_EX_TRANSPARENT on WorkerW #2 for fade transitions;
+            # strip both so child video windows aren't composited at 0 alpha or click/paint-transparent.
+            exstyle = user32.GetWindowLongPtrW(target_workerw, GWL_EXSTYLE)
+            if exstyle & WS_EX_LAYERED:
+                cr_key = wintypes.COLORREF(0)
+                b_alpha = ctypes.c_ubyte(0)
+                dw_flags = wintypes.DWORD(0)
+                lwa_ok = user32.GetLayeredWindowAttributes(
+                    target_workerw, ctypes.byref(cr_key), ctypes.byref(b_alpha), ctypes.byref(dw_flags)
                 )
-            sw_res = user32.ShowWindow(target_workerw, 1)  # SW_SHOWNORMAL
+                log.info(
+                    "WorkerW #2 prior layered state: ok=%s key=0x%08X alpha=%d flags=0x%X",
+                    bool(lwa_ok), cr_key.value, b_alpha.value, dw_flags.value,
+                )
+
+            desired_exstyle = (exstyle & ~(WS_EX_LAYERED | WS_EX_TRANSPARENT)) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            if desired_exstyle != exstyle:
+                self._worker_orig_exstyle = exstyle
+                user32.SetWindowLongPtrW(target_workerw, GWL_EXSTYLE, desired_exstyle)
+
             wrect = wintypes.RECT()
             user32.GetWindowRect(target_workerw, ctypes.byref(wrect))
+            swp_flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW
+            if (wrect.right - wrect.left) <= 0 or (wrect.bottom - wrect.top) <= 0:
+                sw = user32.GetSystemMetrics(SM_CXSCREEN)
+                sh = user32.GetSystemMetrics(SM_CYSCREEN)
+                user32.SetWindowPos(target_workerw, 0, 0, 0, sw, sh, swp_flags)
+            else:
+                user32.SetWindowPos(target_workerw, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | swp_flags)
+
+            sw_res = user32.ShowWindow(target_workerw, SW_SHOWNA)
+            verify_exstyle = user32.GetWindowLongPtrW(target_workerw, GWL_EXSTYLE)
+            if verify_exstyle & WS_EX_LAYERED:
+                slwa_ok = user32.SetLayeredWindowAttributes(target_workerw, 0, 255, LWA_ALPHA)
+                log.warning(
+                    "WorkerW #2 retained WS_EX_LAYERED (verify_ex=0x%08X); SetLayeredWindowAttributes(alpha=255)=%s err=%d",
+                    verify_exstyle & 0xFFFFFFFF, bool(slwa_ok), kernel32.GetLastError(),
+                )
+                if (
+                    not slwa_ok
+                    and self._progman_hwnd
+                    and user32.IsWindow(self._progman_hwnd)
+                    and not user32.FindWindowExW(self._progman_hwnd, 0, "SHELLDLL_DefView", None)
+                ):
+                    log.warning(
+                        "WorkerW #2 cannot be made opaque; falling back cleanly to Progman=0x%X",
+                        self._progman_hwnd,
+                    )
+                    prog_style = user32.GetWindowLongPtrW(self._progman_hwnd, GWL_STYLE)
+                    user32.SetWindowLongPtrW(
+                        self._progman_hwnd, GWL_STYLE, prog_style | WS_CLIPCHILDREN | WS_CLIPSIBLINGS
+                    )
+                    user32.SetWindowPos(
+                        self._progman_hwnd, 0, 0, 0, 0, 0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    )
+                    self._worker_orig_exstyle = None
+                    self._worker_hwnd = self._progman_hwnd
+                    self._defview_parent_hwnd = workerw_defview
+                    return self._progman_hwnd
+
+            user32.GetWindowRect(target_workerw, ctypes.byref(wrect))
+            user32.RedrawWindow(
+                target_workerw, None, None,
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW | RDW_ALLCHILDREN,
+            )
             log.info(
-                "WorkerW #2 configured: style=0x%08X->0x%08X, ShowWindow=%s, visible=%s, rect=(%d,%d,%d,%d)",
-                style & 0xFFFFFFFF, new_style & 0xFFFFFFFF, bool(sw_res),
-                bool(user32.IsWindowVisible(target_workerw)),
+                "WorkerW #2 configured: style=0x%08X->0x%08X, ex=0x%08X->0x%08X, ShowWindow=%s, visible=%s, rect=(%d,%d,%d,%d)",
+                style & 0xFFFFFFFF, new_style & 0xFFFFFFFF,
+                exstyle & 0xFFFFFFFF, verify_exstyle & 0xFFFFFFFF,
+                bool(sw_res), bool(user32.IsWindowVisible(target_workerw)),
                 wrect.left, wrect.top, wrect.right, wrect.bottom,
             )
             self._worker_hwnd = target_workerw
@@ -576,10 +745,10 @@ class WinWallpaperEngine:
         fps_limit: str,
     ) -> list[str]:
         if backend == "direct3d":
-            # Direct3D 9Ex + zero-copy DXVA2: rock-solid on Intel HD 4400 / Haswell Win7 SP1
+            # Direct3D 9Ex + DXVA2-copy: reliable hardware decode on Intel HD 4400 Win7 SP1
             vo_flags = [
                 "--vo=direct3d",
-                "--hwdec=dxva2",
+                "--hwdec=dxva2-copy",
             ]
         else:
             # D3D11 fallback
@@ -709,7 +878,7 @@ class WinWallpaperEngine:
 
             log.info("Spawned mpv PID=%d (backend=%s, title=%r)", self._proc.pid, backend, mpv_title)
 
-            # Poll for mpv top-level window creation (up to 3.0 seconds)
+            # Poll fast (10ms) for mpv top-level window creation (up to 3.0 seconds)
             mpv_hwnd = None
             start_poll = time.time()
             while time.time() - start_poll < 3.0:
@@ -719,7 +888,7 @@ class WinWallpaperEngine:
                 if found and user32.IsWindow(found):
                     mpv_hwnd = found
                     break
-                time.sleep(0.05)
+                time.sleep(0.01)
 
             elapsed_poll = time.time() - start_poll
             log.info(
@@ -729,9 +898,16 @@ class WinWallpaperEngine:
 
             if mpv_hwnd and self._proc.poll() is None:
                 try:
-                    # 1. Adjust window style: strip popup/caption/thickframe, make WS_CHILD | WS_VISIBLE
+                    # Hide while top-level and strip taskbar button before reparenting into WorkerW #2
+                    user32.ShowWindow(mpv_hwnd, SW_HIDE)
+
+                    # 1. Adjust window style: strip popup/caption/thickframe/visible until child-reparented
                     old_style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)
-                    new_style = (old_style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_VISIBLE
+                    new_style = (
+                        (old_style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_VISIBLE))
+                        | WS_CHILD
+                        | WS_CLIPSIBLINGS
+                    )
                     user32.SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, new_style)
                     err_style = kernel32.GetLastError()
 
@@ -741,16 +917,23 @@ class WinWallpaperEngine:
                     user32.SetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE, new_exstyle)
                     err_exstyle = kernel32.GetLastError()
 
-                    # 3. Reparent into WorkerW #2
+                    _delete_taskbar_tab(mpv_hwnd)
+
+                    # 3. Reparent into WorkerW #2 while still hidden, then reveal as child window
                     prev_parent = user32.SetParent(mpv_hwnd, workerw_target)
                     err_parent = kernel32.GetLastError()
 
-                    # 4. Position and size to cover desktop client area
+                    # 4. Position, size, and show without activating
                     swp_ok = user32.SetWindowPos(
                         mpv_hwnd, 0, 0, 0, screen_w, screen_h,
                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW
                     )
                     err_swp = kernel32.GetLastError()
+                    user32.ShowWindow(mpv_hwnd, SW_SHOWNA)
+                    user32.RedrawWindow(
+                        mpv_hwnd, None, None,
+                        RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW,
+                    )
 
                     actual_parent = user32.GetParent(mpv_hwnd)
                     actual_vis = bool(user32.IsWindowVisible(mpv_hwnd))
@@ -776,7 +959,9 @@ class WinWallpaperEngine:
                     )
                     log_win32_window_tree(f"after reparent ({backend})", log)
 
-                    self._autopause = WinAutoPauseWatcher(self._ipc, mode=autopause)
+                    self._autopause = WinAutoPauseWatcher(
+                        self._ipc, mode=autopause, mpv_pid=self._proc.pid,
+                    )
                     self._autopause.start()
                     self._start_health_probe(self._proc, self._ipc, mpv_hwnd, backend)
                     return True
@@ -909,6 +1094,18 @@ class WinWallpaperEngine:
         if sys.platform != "win32":
             return
         try:
+            if (
+                self._worker_orig_exstyle is not None
+                and self._worker_hwnd
+                and user32.IsWindow(self._worker_hwnd)
+            ):
+                user32.SetWindowLongPtrW(self._worker_hwnd, GWL_EXSTYLE, self._worker_orig_exstyle)
+                user32.SetWindowPos(
+                    self._worker_hwnd, 0, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                )
+                self._worker_orig_exstyle = None
+
             user32.SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, None, SPIF_SENDCHANGE)
             flags = RDW_ERASE | RDW_INVALIDATE | RDW_INTERNALPAINT | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
             for hwnd in (self._worker_hwnd, self._defview_parent_hwnd, self._progman_hwnd):

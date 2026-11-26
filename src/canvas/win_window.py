@@ -86,6 +86,7 @@ class WinDesktopCanvasWindow(QWidget):
         self._paint_count = 0
         self._last_canvas_hb = time.monotonic()
         self._rate_limiter = get_rate_limiter()
+        self._stopping = False
 
         # 30 FPS animation timer
         self._timer = QTimer(self)
@@ -103,15 +104,28 @@ class WinDesktopCanvasWindow(QWidget):
         self.lower_to_desktop()
 
     def stop(self) -> None:
+        if self._stopping:
+            return
+        self._stopping = True
         log.info("WinDesktopCanvasWindow.stop() after %d paints", self._paint_count)
-        self._timer.stop()
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
         self.hide()
         self.close()
+        self._ctx = None
+        self._surface = None
+        if self._shared_surface is not None:
+            self._shared_surface.dispose()
+            self._shared_surface = None
+        self.deleteLater()
 
     def set_theme(self, theme: Any) -> None:
         log.info("WinDesktopCanvasWindow.set_theme(%r)", getattr(theme, "name", "?"))
         self.theme = theme
-        self._shared_surface.clear_transparent()
+        if self._shared_surface is not None:
+            self._shared_surface.clear_transparent()
         self.update()
 
     def reload_config(self) -> None:
@@ -155,6 +169,8 @@ class WinDesktopCanvasWindow(QWidget):
             log.error("Canvas %s exception: %s%s", stage, exc, suffix, exc_info=True)
 
     def paintEvent(self, event) -> None:
+        if self._stopping or self._shared_surface is None or self._ctx is None or self._surface is None:
+            return
         self._paint_count += 1
         # 1. Update time snapshot once per second
         now_sec = int(time.time())
@@ -261,8 +277,10 @@ class WinDesktopCanvasWindow(QWidget):
         try:
             painter = QPainter(self)
             painter.setCompositionMode(QPainter.CompositionMode_Source)
-            painter.drawImage(0, 0, self._shared_surface.qimage)
+            blit_img = self._shared_surface.get_blit_qimage()
+            painter.drawImage(0, 0, blit_img)
             painter.end()
+            del blit_img
         except Exception as exc:
             self._log_paint_error("paintEvent_drawImage", exc)
 

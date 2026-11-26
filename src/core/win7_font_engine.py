@@ -12,6 +12,7 @@ while rendering text via QPainter + FreeType on the exact same zero-copy shared 
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
@@ -21,6 +22,14 @@ from typing import Any, NamedTuple, Optional
 import cairo
 
 log = logging.getLogger(__name__)
+
+try:
+    from PyQt5 import sip as _qt_sip  # type: ignore
+except ImportError:
+    try:
+        import sip as _qt_sip  # type: ignore
+    except ImportError:
+        _qt_sip = None
 
 
 def enable_qt_freetype_on_win7() -> None:
@@ -206,39 +215,95 @@ class SharedCairoQtSurface:
     """
     Zero-copy shared memory ARGB32 surface between PyCairo and PyQt5 QPainter.
     Both cairo.FORMAT_ARGB32 and QImage.Format_ARGB32_Premultiplied operate on
-    the exact same underlying page-aligned bytearray.
+    the exact same underlying pinned ctypes buffer so Qt never detaches on clear.
     """
 
     def __init__(self, width: int, height: int, font_registry: BundledFontRegistry) -> None:
         self.width = max(1, width)
         self.height = max(1, height)
         self.stride = self.width * 4
+        self._buf_size = self.stride * self.height
         self.font_registry = font_registry
+        self._disposed = False
 
-        # Allocate single contiguous shared memory buffer
-        self._buffer = bytearray(self.stride * self.height)
+        # Allocate single pinned mutable buffer (never relocated or GC'd early)
+        self._buffer = (ctypes.c_ubyte * self._buf_size)()
+        self._buf_addr = ctypes.addressof(self._buffer)
 
-        # Create Cairo ImageSurface directly over buffer
+        # Create Cairo ImageSurface directly over pinned buffer
         self.cairo_surface = cairo.ImageSurface.create_for_data(
             self._buffer, cairo.FORMAT_ARGB32, self.width, self.height, self.stride
         )
 
-        # Create QImage directly over the exact same buffer
+        # Create mutable QImage over the exact same address via non-const sip.voidptr
+        # so Qt sets ro_data=false and never detaches during QPainter(self.qimage).
+        self._paint_ptr = None
+        self._blit_ptr = None
+        self.qimage = self._make_qimage(writable=True)
+        self._blit_qimage = self._make_qimage(writable=False)
+
+        try:
+            q_addr = int(self.qimage.bits())
+            if q_addr != self._buf_addr:
+                log.warning(
+                    "SharedCairoQtSurface address mismatch: qimage=0x%X vs buffer=0x%X",
+                    q_addr, self._buf_addr,
+                )
+        except Exception:
+            pass
+
+    def _make_qimage(self, writable: bool) -> Any:
         from PyQt5.QtGui import QImage
-        self.qimage = QImage(
+        if _qt_sip is not None:
+            ptr = _qt_sip.voidptr(self._buf_addr, self._buf_size, writable)
+            if writable:
+                self._paint_ptr = ptr
+            else:
+                self._blit_ptr = ptr
+            return QImage(
+                ptr, self.width, self.height, self.stride,
+                QImage.Format_ARGB32_Premultiplied,
+            )
+        return QImage(
             self._buffer, self.width, self.height, self.stride,
-            QImage.Format_ARGB32_Premultiplied
+            QImage.Format_ARGB32_Premultiplied,
         )
 
     def clear_transparent(self) -> None:
         """
         Wipes the shared ARGB32 RAM buffer to 0x00000000 (fully transparent)
-        at native C++ memset speed. Call this at the top of every render frame
-        and immediately upon switching themes.
+        in place via memset without triggering QImage::fill() copy-on-write detach.
         """
+        if self._disposed or self._buffer is None:
+            return
         self.cairo_surface.flush()
-        self.qimage.fill(0)
+        ctypes.memset(self._buf_addr, 0, self._buf_size)
         self.cairo_surface.mark_dirty()
+
+    def get_blit_qimage(self) -> Any:
+        """
+        Return a fresh read-only QImage header pointing to the exact shared buffer
+        for QPainter.drawImage(), avoiding Qt cacheKey staleness and keeping paint-target refcount at 1.
+        """
+        return self._make_qimage(writable=False)
+
+    def dispose(self) -> None:
+        """Deterministically release Cairo and Qt handles before buffer teardown."""
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            if self.cairo_surface is not None:
+                self.cairo_surface.flush()
+                self.cairo_surface.finish()
+        except Exception:
+            pass
+        self._blit_qimage = None
+        self.qimage = None
+        self._blit_ptr = None
+        self._paint_ptr = None
+        self.cairo_surface = None
+        self._buffer = None
 
     def create_context(self) -> Win7CairoContext:
         """Create a drop-in Win7CairoContext proxy operating on this surface."""
@@ -368,28 +433,30 @@ class Win7CairoContext:
 
         qfont = self._current_qfont()
         painter = QPainter(self._qimage)
-        painter.setRenderHints(
-            QPainter.Antialiasing | QPainter.TextAntialiasing | QPainter.SmoothPixmapTransform
-        )
+        try:
+            painter.setRenderHints(
+                QPainter.Antialiasing | QPainter.TextAntialiasing | QPainter.SmoothPixmapTransform
+            )
 
-        # Sync Cairo Current Transformation Matrix (CTM) to QPainter
-        m = self._ctx.get_matrix()
-        painter.setTransform(QTransform(m.xx, m.yx, m.xy, m.yy, m.x0, m.y0))
+            # Sync Cairo Current Transformation Matrix (CTM) to QPainter
+            m = self._ctx.get_matrix()
+            painter.setTransform(QTransform(m.xx, m.yx, m.xy, m.yy, m.x0, m.y0))
 
-        # Sync RGBA color
-        r, g, b, a = self._last_rgba
-        painter.setPen(QColor.fromRgbF(
-            max(0.0, min(1.0, r)),
-            max(0.0, min(1.0, g)),
-            max(0.0, min(1.0, b)),
-            max(0.0, min(1.0, a)),
-        ))
-        painter.setFont(qfont)
-        painter.drawText(QPointF(cx, cy), text)
+            # Sync RGBA color
+            r, g, b, a = self._last_rgba
+            painter.setPen(QColor.fromRgbF(
+                max(0.0, min(1.0, r)),
+                max(0.0, min(1.0, g)),
+                max(0.0, min(1.0, b)),
+                max(0.0, min(1.0, a)),
+            ))
+            painter.setFont(qfont)
+            painter.drawText(QPointF(cx, cy), text)
 
-        fm = QFontMetricsF(qfont)
-        x_adv = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
-        painter.end()
+            fm = QFontMetricsF(qfont)
+            x_adv = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
+        finally:
+            painter.end()
 
         # 2. Mark surface dirty for Cairo and advance the current point
         self._surface.mark_dirty()
