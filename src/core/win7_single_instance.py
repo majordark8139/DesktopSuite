@@ -101,6 +101,7 @@ class SingleInstanceGuard:
     def _wake_existing_instance(self) -> None:
         hwnd = user32.FindWindowW(None, self.window_title)
         if hwnd:
+            log.info("SingleInstanceGuard found existing Control Center hwnd=0x%X; raising window", hwnd)
             pid = wintypes.DWORD(0)
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if pid.value:
@@ -114,6 +115,7 @@ class SingleInstanceGuard:
                 user32.ShowWindow(hwnd, SW_SHOW)
             user32.SetForegroundWindow(hwnd)
         else:
+            log.info("SingleInstanceGuard Control Center window not found; broadcasting WM_DESKTOPSUITE_ACTIVATE")
             user32.AllowSetForegroundWindow(0xFFFFFFFF)  # ASFW_ANY
             user32.PostMessageW(HWND_BROADCAST, WM_DESKTOPSUITE_ACTIVATE, 0, 0)
 
@@ -140,10 +142,11 @@ try:
             if event_type == b"windows_generic_MSG" and sys.platform == "win32":
                 msg = wintypes.MSG.from_address(int(message))
                 if msg.message == WM_DESKTOPSUITE_ACTIVATE and WM_DESKTOPSUITE_ACTIVATE != 0:
+                    log.info("ActivateMessageFilter received WM_DESKTOPSUITE_ACTIVATE")
                     try:
                         self.on_activate_callback()
-                    except Exception as exc:
-                        log.debug("on_activate_callback error: %s", exc)
+                    except Exception:
+                        log.exception("on_activate_callback error")
                     return True, 0
             return False, 0
 

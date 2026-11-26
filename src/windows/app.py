@@ -15,6 +15,7 @@ from typing import Optional
 from PyQt5.QtWidgets import QApplication
 
 from src.core.config import ConfigManager
+from src.core.diagnostics import install_qt_message_handler, log_environment_snapshot
 from src.core.fonts import register_bundled_fonts
 from src.themes.registry import REGISTRY
 from src.wallpaper.win_engine import WinWallpaperEngine
@@ -31,9 +32,10 @@ class WinAppController:
     """
 
     def __init__(self) -> None:
-        # 0. Enable Qt FreeType font engine on Windows 7
+        # 0. Enable Qt FreeType font engine on Windows 7 & capture Qt internal logs
         from src.core.win7_font_engine import enable_qt_freetype_on_win7, get_font_registry
         enable_qt_freetype_on_win7()
+        install_qt_message_handler()
 
         # 1. Initialize QApplication before any QWidgets
         self._gui_app = QApplication.instance()
@@ -47,6 +49,12 @@ class WinAppController:
 
         # Initialize bundled font registry with Qt FreeType engine
         self._font_registry = get_font_registry()
+        log.info(
+            "BundledFontRegistry active: %d mapped keys, %d families (%s)",
+            len(self._font_registry.family_map),
+            len(self._font_registry.available_weights),
+            ", ".join(sorted(self._font_registry.available_weights.keys())),
+        )
 
         from PyQt5.QtGui import QPalette, QColor
         pal = QPalette()
@@ -64,12 +72,14 @@ class WinAppController:
         self._gui_app.setPalette(pal)
 
         # 2. Register bundled fonts with Windows GDI
-        register_bundled_fonts()
+        gdi_ok = register_bundled_fonts()
+        log.info("register_bundled_fonts() returned %s", gdi_ok)
 
         # 3. Asynchronously inspect dependencies (zero blocking on startup)
         run_first_launch_check(background=True)
 
         self.cfg = ConfigManager()
+        log_environment_snapshot(self.cfg)
         self.registry = REGISTRY
         self.engine = WinWallpaperEngine()
         self.audio = WinAudioStream(
@@ -85,6 +95,7 @@ class WinAppController:
     def start_wallpaper(self) -> bool:
         wp = self.cfg.get("wallpaper") or {}
         path = wp.get("video_path", "")
+        log.info("Controller.start_wallpaper requested (configured path=%r)", path)
         if not path or not Path(path).is_file():
             candidates = []
             if getattr(sys, "frozen", False):
@@ -96,6 +107,7 @@ class WinAppController:
             for c in candidates:
                 if c.is_file():
                     path = str(c.resolve())
+                    log.info("Resolved fallback bundled demo video: %s", path)
                     self.cfg.set("wallpaper.video_path", path)
                     self.cfg.save()
                     break
@@ -113,25 +125,31 @@ class WinAppController:
             fps_limit=wp.get("fps_limit", "native"),
             autopause=wp.get("autopause", "maximized"),
         )
+        log.info("Controller.start_wallpaper result=%s", started)
         if started and self.canvas:
             self.canvas.lower_to_desktop()
         return started
 
     def stop_wallpaper(self) -> None:
+        log.info("Controller.stop_wallpaper requested")
         self.engine.stop()
 
     def restart_wallpaper(self) -> bool:
+        log.info("Controller.restart_wallpaper requested")
         self.engine.stop()
         res = self.start_wallpaper()
         if self.canvas:
             self.canvas.lower_to_desktop()
+        log.info("Controller.restart_wallpaper result=%s", res)
         return res
 
     def start_canvas(self) -> None:
         if self.canvas is not None:
+            log.info("Controller.start_canvas skipped (already running)")
             return
         theme_name = self.cfg.get("canvas.active_theme") or "Mond Minimal"
         theme = self.registry.get(theme_name) or self.registry.get_default()
+        log.info("Controller.start_canvas starting audio stream & overlay (theme=%r)", getattr(theme, "name", theme_name))
 
         self.audio.start()
         self.canvas = WinDesktopCanvasWindow(
@@ -144,16 +162,19 @@ class WinAppController:
         log.info("Windows canvas overlay started")
 
     def stop_canvas(self) -> None:
+        log.info("Controller.stop_canvas requested")
         if self.canvas:
             self.canvas.stop()
             self.canvas = None
         self.audio.stop()
 
     def reload_canvas(self) -> None:
+        log.debug("Controller.reload_canvas")
         if self.canvas:
             self.canvas.reload_config()
 
     def apply_theme(self, theme_name: str) -> None:
+        log.info("Controller.apply_theme(%r)", theme_name)
         theme = self.registry.get(theme_name)
         if theme and self.canvas:
             self.canvas.set_theme(theme)
@@ -162,14 +183,18 @@ class WinAppController:
 
     def toggle_canvas_edit_mode(self) -> bool:
         if self.canvas:
-            return self.canvas.toggle_edit_mode()
+            editing = self.canvas.toggle_edit_mode()
+            log.info("Controller.toggle_canvas_edit_mode -> %s", editing)
+            return editing
         return False
 
     def start_all(self) -> None:
+        log.info("Controller.start_all()")
         self.start_canvas()
         self.start_wallpaper()
 
     def stop_all(self) -> None:
+        log.info("Controller.stop_all()")
         self.stop_canvas()
         self.stop_wallpaper()
 
@@ -177,18 +202,22 @@ class WinAppController:
         from src.windows.control_center import create_control_center
 
         if self._gui_window is None:
+            log.info("Creating ControlCenterWindow")
             self._gui_window = create_control_center(self)
 
         if self._gui_window:
+            log.info("Showing & raising ControlCenterWindow")
             self._gui_window.show()
             self._gui_window.raise_()
             self._gui_window.activateWindow()
 
     def run(self, daemon: bool = False) -> None:
+        log.info("WinAppController.run(daemon=%s)", daemon)
         self.start_all()
         if not daemon:
             self.show_control_center()
-        self._gui_app.exec_()
+        rc = self._gui_app.exec_()
+        log.info("QApplication.exec_() exited with code %s", rc)
 
 
 def run_windows(daemon: bool = False) -> None:

@@ -64,69 +64,81 @@ if str(_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if sys.platform == "win32":
-        import tempfile
-        _log_file = os.path.join(tempfile.gettempdir(), "desktopsuite.log")
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-            handlers=[
-                logging.FileHandler(_log_file, mode="a", encoding="utf-8"),
-                logging.StreamHandler(sys.stdout),
-            ],
-        )
+        from src.core.diagnostics import init_diagnostics, write_startup_error
 
-        # Force Qt FreeType font engine on Windows 7 before any Qt modules load
-        from src.core.win7_font_engine import enable_qt_freetype_on_win7
-        enable_qt_freetype_on_win7()
+        is_cli_action = "--kill-wallpaper" in sys.argv or "--toggle-wallpaper" in sys.argv
+        if is_cli_action:
+            init_diagnostics(session_kind="cli")
 
-        if "--kill-wallpaper" in sys.argv:
-            from src.wallpaper.win_engine import WinWallpaperEngine
-            WinWallpaperEngine().stop()
-            print("[Desktop Suite] Live wallpaper killed.")
-            sys.exit(0)
+            from src.core.win7_font_engine import enable_qt_freetype_on_win7
+            enable_qt_freetype_on_win7()
 
-        if "--toggle-wallpaper" in sys.argv:
-            from src.wallpaper.win_engine import WinMpvIPC, WinWallpaperEngine
-            ipc = WinMpvIPC()
-            if ipc.is_alive():
-                res = ipc.send_command(["get_property", "pause"])
-                if res and "data" in res:
-                    if res["data"] is True:
-                        ipc.resume()
-                        print("[Desktop Suite] Wallpaper resumed.")
-                    else:
-                        ipc.pause()
-                        print("[Desktop Suite] Wallpaper paused.")
-            else:
-                from src.core.config import ConfigManager
-                cfg = ConfigManager()
-                wp = cfg.get("wallpaper") or {}
-                path = wp.get("video_path", "")
-                if path and Path(path).is_file():
-                    engine = WinWallpaperEngine()
-                    started = engine.start(
-                        video_path=path,
-                        speed=float(wp.get("playback_speed", 1.0)),
-                        volume=int(wp.get("volume", 50)),
-                        mute=bool(wp.get("mute", True)),
-                        fit_mode=wp.get("fit_mode", "fill"),
-                        fps_limit=wp.get("fps_limit", "native"),
-                        autopause=wp.get("autopause", "maximized"),
-                    )
-                    if started:
-                        print(f"[Desktop Suite] Wallpaper started ({path}).")
-                    else:
-                        print("[Desktop Suite] Failed to start wallpaper engine.")
+            if "--kill-wallpaper" in sys.argv:
+                from src.wallpaper.win_engine import WinWallpaperEngine
+                WinWallpaperEngine().stop()
+                print("[Desktop Suite] Live wallpaper killed.")
+                sys.exit(0)
+
+            if "--toggle-wallpaper" in sys.argv:
+                from src.wallpaper.win_engine import WinMpvIPC, WinWallpaperEngine
+                ipc = WinMpvIPC()
+                if ipc.is_alive():
+                    res = ipc.send_command(["get_property", "pause"])
+                    if res and "data" in res:
+                        if res["data"] is True:
+                            ipc.resume()
+                            print("[Desktop Suite] Wallpaper resumed.")
+                        else:
+                            ipc.pause()
+                            print("[Desktop Suite] Wallpaper paused.")
                 else:
-                    print("[Desktop Suite] Cannot start wallpaper: no valid video_path configured.")
-            sys.exit(0)
+                    from src.core.config import ConfigManager
+                    cfg = ConfigManager()
+                    wp = cfg.get("wallpaper") or {}
+                    path = wp.get("video_path", "")
+                    if path and Path(path).is_file():
+                        engine = WinWallpaperEngine()
+                        started = engine.start(
+                            video_path=path,
+                            speed=float(wp.get("playback_speed", 1.0)),
+                            volume=int(wp.get("volume", 50)),
+                            mute=bool(wp.get("mute", True)),
+                            fit_mode=wp.get("fit_mode", "fill"),
+                            fps_limit=wp.get("fps_limit", "native"),
+                            autopause=wp.get("autopause", "maximized"),
+                        )
+                        if started:
+                            print(f"[Desktop Suite] Wallpaper started ({path}).")
+                        else:
+                            print("[Desktop Suite] Failed to start wallpaper engine.")
+                    else:
+                        print("[Desktop Suite] Cannot start wallpaper: no valid video_path configured.")
+                sys.exit(0)
 
-        # Single-instance enforcement on Windows to prevent duplicate overlay canvases
-        from src.core.win7_single_instance import SingleInstanceGuard
-        _guard = SingleInstanceGuard()
-        if not _guard.acquire_or_activate_existing():
-            print("[Desktop Suite] Another instance is already running. Raising Control Center...")
-            sys.exit(0)
+        try:
+            # Force Qt FreeType font engine on Windows 7 before any Qt modules load
+            from src.core.win7_font_engine import enable_qt_freetype_on_win7
+            enable_qt_freetype_on_win7()
+
+            # Single-instance enforcement BEFORE opening DesktopSuite_latest.log(mode="w")
+            # so secondary clicks wake the existing window without truncating its log.
+            from src.core.win7_single_instance import SingleInstanceGuard
+            _guard = SingleInstanceGuard()
+            if not _guard.acquire_or_activate_existing():
+                init_diagnostics(session_kind="cli")
+                logging.getLogger("DesktopSuite.SingleInstance").info(
+                    "Secondary launch detected (%s); activated existing Control Center and exiting.",
+                    sys.argv,
+                )
+                print("[Desktop Suite] Another instance is already running. Raising Control Center...")
+                sys.exit(0)
+
+            init_diagnostics(session_kind="primary")
+        except SystemExit:
+            raise
+        except BaseException as exc:
+            write_startup_error("Bootstrap failure before primary diagnostics initialization", exc)
+            raise
 
         # Launch Windows Native DesktopSuite
         from src.windows import run_windows

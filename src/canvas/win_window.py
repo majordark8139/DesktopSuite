@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import QWidget, QApplication
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QPainter, QImage
 
+from src.core.diagnostics import get_rate_limiter
 from src.core.fonts import register_bundled_fonts
 from src.themes.base import TimeData
 from src.canvas.drag_controller import DragController
@@ -82,24 +83,33 @@ class WinDesktopCanvasWindow(QWidget):
         self._time_data = TimeData.now(is_24h=False)
         self._last_sec = -1
         self._render_bars = np.zeros(27, dtype=np.float32)
+        self._paint_count = 0
+        self._last_canvas_hb = time.monotonic()
+        self._rate_limiter = get_rate_limiter()
 
         # 30 FPS animation timer
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.update)
         self._timer.start(33)
 
-        log.info("WinDesktopCanvasWindow initialised (%dx%d)", self.width, self.height)
+        log.info(
+            "WinDesktopCanvasWindow initialised (%dx%d, hwnd=0x%X, theme=%r, positions=%s)",
+            self.width, self.height, int(self.winId()), getattr(self.theme, "name", "?"), self.drag.components,
+        )
 
     def start(self) -> None:
+        log.info("WinDesktopCanvasWindow.start()")
         self.show()
         self.lower_to_desktop()
 
     def stop(self) -> None:
+        log.info("WinDesktopCanvasWindow.stop() after %d paints", self._paint_count)
         self._timer.stop()
         self.hide()
         self.close()
 
     def set_theme(self, theme: Any) -> None:
+        log.info("WinDesktopCanvasWindow.set_theme(%r)", getattr(theme, "name", "?"))
         self.theme = theme
         self._shared_surface.clear_transparent()
         self.update()
@@ -112,10 +122,13 @@ class WinDesktopCanvasWindow(QWidget):
         """Position the canvas window at the desktop layer below application windows."""
         try:
             user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            hwnd = int(self.winId())
             # HWND_BOTTOM = 1, SWP_NOMOVE = 2, SWP_NOSIZE = 1, SWP_NOACTIVATE = 0x0010
-            user32.SetWindowPos(int(self.winId()), 1, 0, 0, 0, 0, 0x0013)
+            ok = user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0013)
+            log.info("lower_to_desktop(hwnd=0x%X): ok=%s err=%d", hwnd, bool(ok), kernel32.GetLastError())
         except Exception as exc:
-            log.debug("lower_to_desktop: %s", exc)
+            log.warning("lower_to_desktop exception: %s", exc, exc_info=True)
 
     def toggle_edit_mode(self) -> bool:
         self._edit_mode = not self._edit_mode
@@ -131,10 +144,18 @@ class WinDesktopCanvasWindow(QWidget):
         else:
             self.lower_to_desktop()
 
+        log.info("WinDesktopCanvasWindow.toggle_edit_mode -> edit_mode=%s", self._edit_mode)
         self.update()
         return self._edit_mode
 
+    def _log_paint_error(self, stage: str, exc: Exception) -> None:
+        allowed, suppressed = self._rate_limiter.check(f"canvas:{stage}", interval=5.0)
+        if allowed:
+            suffix = f" [suppressed {suppressed}]" if suppressed else ""
+            log.error("Canvas %s exception: %s%s", stage, exc, suffix, exc_info=True)
+
     def paintEvent(self, event) -> None:
+        self._paint_count += 1
         # 1. Update time snapshot once per second
         now_sec = int(time.time())
         if now_sec != self._last_sec:
@@ -142,9 +163,11 @@ class WinDesktopCanvasWindow(QWidget):
             self._last_sec = now_sec
 
         # 2. Smooth audio visualizer bars
+        max_audio_bar = 0.0
         if self.audio:
             with self.audio.lock:
-                target_bars = self.audio.bars
+                target_bars = self.audio.bars.copy()
+            max_audio_bar = float(np.max(target_bars))
             self._render_bars += 0.46 * (target_bars - self._render_bars)
         else:
             self._render_bars *= 0.85
@@ -176,7 +199,7 @@ class WinDesktopCanvasWindow(QWidget):
             try:
                 self.theme.draw_background(self._ctx, self.width, self.height, cfg)
             except Exception as exc:
-                log.debug("draw_background exception: %s", exc)
+                self._log_paint_error("draw_background", exc)
 
         # 6. Clock component
         if cfg["clock_enabled"]:
@@ -189,7 +212,7 @@ class WinDesktopCanvasWindow(QWidget):
             try:
                 self.theme.draw_clock(self._ctx, clk_w, clk_h, cfg, self._time_data)
             except Exception as exc:
-                log.debug("draw_clock exception: %s", exc)
+                self._log_paint_error("draw_clock", exc)
             self._ctx.restore()
             self.drag.update_bbox("clock", float(clk_w), float(clk_h))
 
@@ -204,7 +227,7 @@ class WinDesktopCanvasWindow(QWidget):
             try:
                 self.theme.draw_date(self._ctx, dt_w, dt_h, cfg, self._time_data)
             except Exception as exc:
-                log.debug("draw_date exception: %s", exc)
+                self._log_paint_error("draw_date", exc)
             self._ctx.restore()
             self.drag.update_bbox("date", float(dt_w), float(dt_h))
 
@@ -221,7 +244,7 @@ class WinDesktopCanvasWindow(QWidget):
             try:
                 self.theme.draw_visualizer(self._ctx, vis_w, vis_h, cfg, self._render_bars)
             except Exception as exc:
-                log.debug("draw_visualizer exception: %s", exc)
+                self._log_paint_error("draw_visualizer", exc)
             self._ctx.restore()
             self.drag.update_bbox("visualizer", float(vis_w), float(vis_h))
 
@@ -230,7 +253,7 @@ class WinDesktopCanvasWindow(QWidget):
             try:
                 self.drag.draw_overlay(self._ctx)
             except Exception as exc:
-                log.debug("draw_overlay exception: %s", exc)
+                self._log_paint_error("draw_overlay", exc)
 
         self._surface.flush()
 
@@ -241,7 +264,17 @@ class WinDesktopCanvasWindow(QWidget):
             painter.drawImage(0, 0, self._shared_surface.qimage)
             painter.end()
         except Exception as exc:
-            log.debug("paintEvent drawImage error: %s", exc)
+            self._log_paint_error("paintEvent_drawImage", exc)
+
+        now = time.monotonic()
+        if now - self._last_canvas_hb >= 5.0:
+            self._last_canvas_hb = now
+            log.info(
+                "Canvas heartbeat (5s): paints=%d, theme=%r, visible=%s, vis_en=%s, "
+                "max_audio_bar=%.4f, max_render_bar=%.4f",
+                self._paint_count, getattr(self.theme, "name", "?"), self.isVisible(),
+                cfg["visualizer_enabled"], max_audio_bar, float(np.max(self._render_bars)),
+            )
 
     def mousePressEvent(self, event) -> None:
         if self._edit_mode and event.button() == Qt.LeftButton:

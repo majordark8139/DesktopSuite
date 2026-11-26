@@ -21,8 +21,10 @@ from PyQt5.QtWidgets import (
     QTabWidget, QGroupBox, QPushButton, QLabel, QSlider, QCheckBox,
     QComboBox, QFileDialog, QColorDialog, QScrollArea, QFrame
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QColor, QFont, QIcon, QPixmap, QPalette
+
+from src.core.diagnostics import get_rate_limiter
 
 log = logging.getLogger(__name__)
 
@@ -243,10 +245,17 @@ class ControlCenterWindow(QMainWindow):
         layout_tab_cv.setContentsMargins(0, 0, 0, 0)
         layout_tab_cv.addWidget(scroll_cv)
         tabs.addTab(tab_cv, "🕒 Clock && Canvas Studio")
+        tabs.currentChanged.connect(lambda idx: log.info("UI Tab switched -> %r (index=%d)", tabs.tabText(idx), idx))
 
         self._building = False
         self._update_engine_status()
         self._register_global_hotkey(self._current_hotkey)
+        log.info(
+            "ControlCenterWindow initialized (hotkey=%r, theme=%r, video=%r)",
+            self._current_hotkey,
+            self.cfg.get("canvas.active_theme"),
+            self.cfg.get("wallpaper.video_path"),
+        )
 
     # -----------------------------------------------------------------------
     # Native Event Handling for Global Win32 Hotkey
@@ -260,7 +269,9 @@ class ControlCenterWindow(QMainWindow):
                     self._on_global_hotkey_triggered()
                     return True, 0
             except Exception as exc:
-                log.debug("nativeEvent MSG handling error: %s", exc)
+                allowed, suppressed = get_rate_limiter().check("ui:nativeEvent", interval=5.0)
+                if allowed:
+                    log.warning("nativeEvent MSG handling error (suppressed=%d): %s", suppressed, exc)
         return super().nativeEvent(eventType, message)
 
     def _register_global_hotkey(self, hotkey_name: str) -> bool:
@@ -273,6 +284,11 @@ class ControlCenterWindow(QMainWindow):
             if hotkey_name not in HOTKEY_PRESETS or hotkey_name == "Disabled":
                 self.lbl_hk_status.setText("● Hotkey Disabled")
                 self.lbl_hk_status.setStyleSheet("color: #a6adc8; font-weight: normal;")
+                self._current_hotkey = "Disabled"
+                if not self._building:
+                    self.cfg.set("wallpaper.shortcut", "Disabled")
+                    self.cfg.save()
+                log.info("Global Windows hotkey disabled")
                 return False
 
             params = HOTKEY_PRESETS[hotkey_name]
@@ -309,8 +325,22 @@ class ControlCenterWindow(QMainWindow):
             log.info("Global hotkey: Started live wallpaper")
         self._update_engine_status()
 
+    def showEvent(self, event) -> None:
+        log.info("ControlCenterWindow.showEvent()")
+        super().showEvent(event)
+
+    def hideEvent(self, event) -> None:
+        log.info("ControlCenterWindow.hideEvent()")
+        super().hideEvent(event)
+
+    def changeEvent(self, event) -> None:
+        if event.type() == QEvent.WindowStateChange:
+            log.info("ControlCenterWindow state changed -> minimized=%s", self.isMinimized())
+        super().changeEvent(event)
+
     def closeEvent(self, event) -> None:
         """Unregister hotkey when window closes."""
+        log.info("ControlCenterWindow.closeEvent() -> closing Control Center")
         try:
             ctypes.windll.user32.UnregisterHotKey(int(self.winId()), self.HOTKEY_ID)
         except Exception:
@@ -497,6 +527,7 @@ class ControlCenterWindow(QMainWindow):
         sl_vol.setRange(0, 100)
         sl_vol.setValue(vol_val)
         sl_vol.valueChanged.connect(self._on_volume_changed)
+        sl_vol.sliderReleased.connect(lambda: log.info("UI Slider released: volume=%d%%", sl_vol.value()))
         h_vol.addWidget(sl_vol, 1)
         h_vol.addWidget(self.lbl_vol_val)
         v_pb.addLayout(h_vol)
@@ -511,6 +542,7 @@ class ControlCenterWindow(QMainWindow):
         sl_spd.setRange(25, 200)
         sl_spd.setValue(int(spd_val * 100))
         sl_spd.valueChanged.connect(self._on_speed_changed)
+        sl_spd.sliderReleased.connect(lambda: log.info("UI Slider released: speed=%.2fx", sl_spd.value() / 100.0))
         h_spd.addWidget(sl_spd, 1)
         h_spd.addWidget(self.lbl_spd_val)
         v_pb.addLayout(h_spd)
@@ -711,6 +743,7 @@ class ControlCenterWindow(QMainWindow):
         sl_op.setRange(0, 100)
         sl_op.setValue(int(op_val * 100))
         sl_op.valueChanged.connect(self._on_opacity_changed)
+        sl_op.sliderReleased.connect(lambda: log.info("UI Slider released: background_opacity=%d%%", sl_op.value()))
         h_op.addWidget(sl_op, 1)
         h_op.addWidget(self.lbl_op_val)
         v_sc.addLayout(h_op)
@@ -725,6 +758,7 @@ class ControlCenterWindow(QMainWindow):
         sl_msc.setRange(50, 250)
         sl_msc.setValue(int(msc_val * 100))
         sl_msc.valueChanged.connect(self._on_scale_changed)
+        sl_msc.sliderReleased.connect(lambda: log.info("UI Slider released: master_scale=%.2fx", sl_msc.value() / 100.0))
         h_msc.addWidget(sl_msc, 1)
         h_msc.addWidget(self.lbl_msc_val)
         v_sc.addLayout(h_msc)
@@ -739,6 +773,7 @@ class ControlCenterWindow(QMainWindow):
         sl_int.setRange(10, 200)
         sl_int.setValue(int(int_val * 100))
         sl_int.valueChanged.connect(self._on_intensity_changed)
+        sl_int.sliderReleased.connect(lambda: log.info("UI Slider released: visualizer_intensity=%d%%", sl_int.value()))
         h_int.addWidget(sl_int, 1)
         h_int.addWidget(self.lbl_int_val)
         v_sc.addLayout(h_int)
@@ -761,6 +796,7 @@ class ControlCenterWindow(QMainWindow):
         self.sl_clk_sc.setRange(40, 300)
         self.sl_clk_sc.setValue(int(clk_sc * 100))
         self.sl_clk_sc.valueChanged.connect(lambda v: self._on_elem_scale_changed("clock", v, self.lbl_clk_sc))
+        self.sl_clk_sc.sliderReleased.connect(lambda: log.info("UI Slider released: clock_scale=%.2fx", self.sl_clk_sc.value() / 100.0))
         h_csc.addWidget(self.sl_clk_sc, 1)
         h_csc.addWidget(self.lbl_clk_sc)
         v_sc.addWidget(self.box_clk_sc)
@@ -777,6 +813,7 @@ class ControlCenterWindow(QMainWindow):
         self.sl_dt_sc.setRange(40, 300)
         self.sl_dt_sc.setValue(int(dt_sc * 100))
         self.sl_dt_sc.valueChanged.connect(lambda v: self._on_elem_scale_changed("date", v, self.lbl_dt_sc))
+        self.sl_dt_sc.sliderReleased.connect(lambda: log.info("UI Slider released: date_scale=%.2fx", self.sl_dt_sc.value() / 100.0))
         h_dsc.addWidget(self.sl_dt_sc, 1)
         h_dsc.addWidget(self.lbl_dt_sc)
         v_sc.addWidget(self.box_dt_sc)
@@ -793,6 +830,7 @@ class ControlCenterWindow(QMainWindow):
         self.sl_vis_sc.setRange(40, 300)
         self.sl_vis_sc.setValue(int(vis_sc * 100))
         self.sl_vis_sc.valueChanged.connect(lambda v: self._on_elem_scale_changed("visualizer", v, self.lbl_vis_sc))
+        self.sl_vis_sc.sliderReleased.connect(lambda: log.info("UI Slider released: visualizer_scale=%.2fx", self.sl_vis_sc.value() / 100.0))
         h_vsc.addWidget(self.sl_vis_sc, 1)
         h_vsc.addWidget(self.lbl_vis_sc)
         v_sc.addWidget(self.box_vis_sc)
@@ -866,51 +904,66 @@ class ControlCenterWindow(QMainWindow):
             self.lbl_status.setStyleSheet("background-color: #45475a; border-radius: 8px; padding: 3px 10px; color: #cdd6f4; font-weight: bold;")
 
     def _on_start(self) -> None:
+        log.info("UI Action: Click Start Wallpaper")
         cur_video = self.cfg.get("wallpaper.video_path") or ""
         if not cur_video or not Path(cur_video).is_file():
             self._on_browse()
             cur_video = self.cfg.get("wallpaper.video_path") or ""
             if not cur_video or not Path(cur_video).is_file():
+                log.info("UI Action Start aborted: no valid video selected")
                 return
         self.ctrl.start_wallpaper()
         self._update_engine_status()
 
     def _on_stop(self) -> None:
+        log.info("UI Action: Click Stop Wallpaper")
         self.ctrl.stop_wallpaper()
         self._update_engine_status()
 
     def _on_kill(self) -> None:
         """Emergency kill wallpaper engine and stop any background mpv processes."""
+        log.info("UI Action: Click Kill Wallpaper")
         self.ctrl.stop_wallpaper()
         try:
             import subprocess
-            subprocess.run(["taskkill", "/F", "/IM", "mpv.exe"], capture_output=True, check=False)
-        except Exception:
-            pass
+            res = subprocess.run(["taskkill", "/F", "/IM", "mpv.exe"], capture_output=True, text=True, check=False)
+            log.info("taskkill /F /IM mpv.exe rc=%d stdout=%r stderr=%r", res.returncode, res.stdout.strip(), res.stderr.strip())
+        except Exception as exc:
+            log.warning("taskkill error: %s", exc)
         self._update_engine_status()
         log.info("Killed wallpaper playback process")
 
     def _on_restart(self) -> None:
+        log.info("UI Action: Click Restart Wallpaper")
         self.ctrl.restart_wallpaper()
         self._update_engine_status()
 
     def _on_pause(self) -> None:
-        self.ctrl.engine.toggle_pause()
+        log.info("UI Action: Click Pause / Resume")
+        ok = self.ctrl.engine.toggle_pause()
+        log.info("UI Action Pause / Resume result=%s", ok)
 
     def _on_browse(self) -> None:
+        log.info("UI Action: Click Browse Video")
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Wallpaper Video", "", "Video Files (*.mp4 *.mkv *.webm *.mov *.avi)"
         )
         if path:
+            log.info("UI Video selected: %s", path)
             self.cfg.set("wallpaper.video_path", path)
             self.cfg.save()
             self.lbl_file.setText(Path(path).name)
+        else:
+            log.info("UI Browse Video cancelled")
 
     def _on_volume_changed(self, val: int) -> None:
         self.lbl_vol_val.setText(f"{val}%")
         self.cfg.set("wallpaper.volume", val)
         self.cfg.save()
         self.ctrl.engine.set_volume(val)
+        allowed, _ = get_rate_limiter().check("ui:slider:vol", interval=0.5)
+        if allowed:
+            log.info("UI Change: wallpaper.volume=%d%%", val)
 
     def _on_speed_changed(self, val: int) -> None:
         speed = val / 100.0
@@ -918,25 +971,33 @@ class ControlCenterWindow(QMainWindow):
         self.cfg.set("wallpaper.playback_speed", speed)
         self.cfg.save()
         self.ctrl.engine.set_speed(speed)
+        allowed, _ = get_rate_limiter().check("ui:slider:spd", interval=0.5)
+        if allowed:
+            log.info("UI Change: wallpaper.playback_speed=%.2fx", speed)
 
     def _on_mute_changed(self, val: bool) -> None:
+        log.info("UI Change: wallpaper.mute=%s", val)
         self.cfg.set("wallpaper.mute", val)
         self.cfg.save()
         self.ctrl.engine.set_mute(val)
 
     def _on_fit_changed(self, val: str) -> None:
+        log.info("UI Change: wallpaper.fit_mode=%r", val)
         self.cfg.set("wallpaper.fit_mode", val)
         self.cfg.save()
 
     def _on_ap_changed(self, val: str) -> None:
+        log.info("UI Change: wallpaper.autopause=%r", val)
         self.cfg.set("wallpaper.autopause", val)
         self.cfg.save()
 
     def _on_fps_changed(self, val: str) -> None:
+        log.info("UI Change: wallpaper.fps_limit=%r", val)
         self.cfg.set("wallpaper.fps_limit", val)
         self.cfg.save()
 
     def _on_autostart_toggled(self, enabled: bool) -> None:
+        log.info("UI Change: wallpaper.autostart=%s", enabled)
         self.cfg.set("wallpaper.autostart", enabled)
         self.cfg.save()
         startup_dir = get_windows_startup_dir()
@@ -960,9 +1021,12 @@ class ControlCenterWindow(QMainWindow):
                 log.warning("Failed to remove startup shortcut: %s", exc)
 
     def _on_theme_changed(self, name: str) -> None:
+        log.info("UI Change: canvas.active_theme=%r", name)
         self.ctrl.apply_theme(name)
 
-    def _set_canvas_cfg(self, key: str, val: Any) -> None:
+    def _set_canvas_cfg(self, key: str, val: Any, quiet: bool = False) -> None:
+        if not quiet:
+            log.info("UI Change: %s=%r", key, val)
         self.cfg.set(key, val)
         self.cfg.save()
         self.ctrl.reload_canvas()
@@ -970,18 +1034,21 @@ class ControlCenterWindow(QMainWindow):
     def _on_opacity_changed(self, val: int) -> None:
         opacity = val / 100.0
         self.lbl_op_val.setText(f"{val}%")
-        self._set_canvas_cfg("canvas.background_opacity", opacity)
+        allowed, _ = get_rate_limiter().check("ui:slider:op", interval=0.5)
+        self._set_canvas_cfg("canvas.background_opacity", opacity, quiet=not allowed)
 
     def _on_scale_changed(self, val: int) -> None:
         scale = val / 100.0
         self.lbl_msc_val.setText(f"{scale:.2f}x")
-        self._set_canvas_cfg("canvas.scale", scale)
+        allowed, _ = get_rate_limiter().check("ui:slider:scale", interval=0.5)
+        self._set_canvas_cfg("canvas.scale", scale, quiet=not allowed)
 
     def _on_intensity_changed(self, val: int) -> None:
         intensity = val / 100.0
         self.lbl_int_val.setText(f"{val}%")
         self.ctrl.audio.set_intensity(intensity)
-        self._set_canvas_cfg("canvas.visualizer_intensity", intensity)
+        allowed, _ = get_rate_limiter().check("ui:slider:intensity", interval=0.5)
+        self._set_canvas_cfg("canvas.visualizer_intensity", intensity, quiet=not allowed)
 
     def _on_independent_toggled(self, checked: bool) -> None:
         self._update_independent_visibility(checked)
@@ -995,7 +1062,8 @@ class ControlCenterWindow(QMainWindow):
     def _on_elem_scale_changed(self, elem: str, val: int, label: QLabel) -> None:
         scale = val / 100.0
         label.setText(f"{scale:.2f}x")
-        self._set_canvas_cfg(f"canvas.{elem}_scale", scale)
+        allowed, _ = get_rate_limiter().check(f"ui:slider:{elem}_scale", interval=0.5)
+        self._set_canvas_cfg(f"canvas.{elem}_scale", scale, quiet=not allowed)
 
     def _update_color_button(self, btn: QPushButton, hex_col: str, title: str) -> None:
         btn.setText(f"  {title}:  {hex_col}  ")
@@ -1016,14 +1084,19 @@ class ControlCenterWindow(QMainWindow):
 
     def _pick_color(self, key: str, btn: QPushButton, title: str) -> None:
         cur_hex = self.cfg.get(key) or "#FFFFFF"
+        log.info("UI Action: Open color picker for %s (current=%s)", key, cur_hex)
         col = QColorDialog.getColor(QColor(cur_hex), self, f"Select {title}")
         if col.isValid():
             new_hex = col.name().upper()
+            log.info("UI Color chosen: %s -> %s", key, new_hex)
             self._update_color_button(btn, new_hex, title)
             self._set_canvas_cfg(key, new_hex)
+        else:
+            log.info("UI Color picker cancelled for %s", key)
 
     def _on_toggle_drag(self) -> None:
         editing = self.ctrl.toggle_canvas_edit_mode()
+        log.info("UI Action: Toggle Drag Mode -> editing=%s", editing)
         if editing:
             self.btn_drag.setText("🔒  Lock Positions (Save)")
             self.btn_drag.setObjectName("btn-lock")
@@ -1034,6 +1107,7 @@ class ControlCenterWindow(QMainWindow):
             self.btn_drag.setStyleSheet("background-color: #00acc1; color: white; font-weight: bold; padding: 9px 18px; border-radius: 6px;")
 
     def _on_reset_layout(self) -> None:
+        log.info("UI Action: Click Reset Center Layout")
         sw = self.ctrl.canvas.width if self.ctrl.canvas else 1366
         sh = self.ctrl.canvas.height if self.ctrl.canvas else 768
         cx = (sw - 430) // 2

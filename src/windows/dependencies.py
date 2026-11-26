@@ -108,11 +108,15 @@ def run_first_launch_check(background: bool = True) -> None:
         log.info("Running DesktopSuite first-launch dependency inspection...")
 
         # 1. Windows 7 API path compatibility
-        check_and_fix_win7_path_dll()
+        dll_ok = check_and_fix_win7_path_dll()
+        log.info("Dependency check [api-ms-win-core-path-l1-1-0.dll]: %s", "OK" if dll_ok else "NOT FOUND")
 
         # 2. Visual C++ runtime
-        if not check_vcredist():
-            install_vcredist_silent()
+        vc_ok = check_vcredist()
+        log.info("Dependency check [vcruntime140.dll]: %s", "OK" if vc_ok else "MISSING (attempting install)")
+        if not vc_ok:
+            installed = install_vcredist_silent()
+            log.info("VC++ Redistributable silent install result: %s", installed)
 
         # 3. Check mpv player
         mpv_path = check_mpv()

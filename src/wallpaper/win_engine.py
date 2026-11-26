@@ -35,6 +35,13 @@ import time
 from typing import Optional
 import uuid
 
+from src.core.diagnostics import (
+    get_log_dir,
+    get_rate_limiter,
+    log_win32_window_tree,
+    read_log_tail,
+)
+
 log = logging.getLogger(__name__)
 
 # --- 64-bit Safe Pointer Types ---
@@ -173,6 +180,18 @@ if sys.platform == "win32":
     ]
     user32.SendMessageTimeoutW.restype = LRESULT
 
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+
+    user32.GetParent.argtypes = [wintypes.HWND]
+    user32.GetParent.restype = wintypes.HWND
+
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+
     @WNDPROC
     def _host_wnd_proc(hwnd, msg, wparam, lparam):
         if msg == WM_ERASEBKGND:
@@ -208,17 +227,25 @@ class WinMpvIPC:
     def __init__(self, pipe_path: str, timeout: float = 0.5) -> None:
         self.pipe_path = pipe_path
         self.timeout = timeout
+        self._lock = threading.Lock()
 
     def send_command(self, cmd_list: list) -> Optional[dict]:
         payload = json.dumps({"command": cmd_list}) + "\n"
-        try:
-            with open(self.pipe_path, "r+b", buffering=0) as pipe:
-                pipe.write(payload.encode("utf-8"))
-                line = pipe.readline()
-                if line:
-                    return json.loads(line.decode("utf-8", errors="replace"))
-        except Exception:
-            return None
+        with self._lock:
+            try:
+                with open(self.pipe_path, "r+b", buffering=0) as pipe:
+                    pipe.write(payload.encode("utf-8"))
+                    line = pipe.readline()
+                    if line:
+                        return json.loads(line.decode("utf-8", errors="replace"))
+            except FileNotFoundError:
+                return None
+            except Exception as exc:
+                allowed, suppressed = get_rate_limiter().check(f"ipc:{cmd_list[:1]}", interval=5.0)
+                if allowed:
+                    suffix = f" [suppressed {suppressed}]" if suppressed else ""
+                    log.debug("WinMpvIPC.send_command(%s) error: %s%s", cmd_list, exc, suffix)
+                return None
         return None
 
     def is_alive(self) -> bool:
@@ -262,16 +289,19 @@ class WinAutoPauseWatcher:
 
     def start(self) -> None:
         if self.mode == "off":
+            log.info("WinAutoPauseWatcher disabled (mode=off)")
             return
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="win-autopause")
         self._thread.start()
+        log.info("WinAutoPauseWatcher started (mode=%s, interval=%.2fs)", self.mode, self.interval)
 
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=1.0)
             self._thread = None
+        log.info("WinAutoPauseWatcher stopped")
 
     def _loop(self) -> None:
         if sys.platform != "win32":
@@ -289,13 +319,18 @@ class WinAutoPauseWatcher:
                 # Don't pause when our own Control Center or Canvas has focus
                 fg_pid = wintypes.DWORD(0)
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(fg_pid))
+                cls_buf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cls_buf, 256)
+                cls_name = cls_buf.value
+                title_buf = ctypes.create_unicode_buffer(256)
+                user32.GetWindowTextW(hwnd, title_buf, 256)
+                fg_title = title_buf.value
+                is_zoomed = False
+                fg_rect = (0, 0, 0, 0)
+
                 if fg_pid.value == os.getpid():
                     should_pause = False
                 else:
-                    buf = ctypes.create_unicode_buffer(256)
-                    user32.GetClassNameW(hwnd, buf, 256)
-                    cls_name = buf.value
-
                     if cls_name in ("Progman", "WorkerW", "Shell_TrayWnd", "DesktopCanvasWindow", "DesktopSuiteWin7MpvHost"):
                         should_pause = False
                     elif self.mode == "focus":
@@ -304,6 +339,7 @@ class WinAutoPauseWatcher:
                         is_zoomed = bool(user32.IsZoomed(hwnd))
                         rect = wintypes.RECT()
                         user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                        fg_rect = (rect.left, rect.top, rect.right, rect.bottom)
                         is_fullscreen = (
                             rect.left <= 0 and rect.top <= 0 and
                             rect.right >= sw and rect.bottom >= sh
@@ -313,13 +349,21 @@ class WinAutoPauseWatcher:
                         should_pause = False
 
                 if should_pause != self._is_paused:
+                    log.info(
+                        "WinAutoPauseWatcher -> %s (mode=%s, fg_hwnd=0x%X, pid=%d, cls=%r, title=%r, zoomed=%s, rect=%s)",
+                        "PAUSE" if should_pause else "RESUME",
+                        self.mode, int(hwnd), fg_pid.value, cls_name, fg_title, is_zoomed, fg_rect,
+                    )
                     if should_pause:
                         self.ipc.pause()
                     else:
                         self.ipc.resume()
                     self._is_paused = should_pause
             except Exception as exc:
-                log.debug("WinAutoPauseWatcher error: %s", exc)
+                allowed, suppressed = get_rate_limiter().check("autopause:err", interval=5.0)
+                if allowed:
+                    suffix = f" [suppressed {suppressed}]" if suppressed else ""
+                    log.warning("WinAutoPauseWatcher error: %s%s", exc, suffix)
 
             time.sleep(self.interval)
 
@@ -342,7 +386,7 @@ class WinWallpaperEngine:
         self._progman_hwnd: Optional[int] = None
         self.ipc_pipe_path: Optional[str] = None
         self.last_error_message: str = ""
-        self.log_path = os.path.join(tempfile.gettempdir(), "desktopsuite_mpv.log")
+        self.log_path = str(get_log_dir() / "mpv_latest.log")
         atexit.register(self.stop)
 
     # -----------------------------------------------------------------------
@@ -405,18 +449,34 @@ class WinWallpaperEngine:
         if sys.platform != "win32":
             return 0
 
+        dwm_active = self.is_dwm_enabled()
+        log.info("ensure_workerw(): DWM composition enabled = %s", dwm_active)
+
         # 1. Ensure Windows 7 Client-Area Animation is enabled before 0x052C
         anim_enabled = wintypes.BOOL(0)
         user32.SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(anim_enabled), 0)
+        log.info("ensure_workerw(): SPI_GETCLIENTAREAANIMATION initial = %s", bool(anim_enabled.value))
         if not anim_enabled.value:
             log.info("Enabling Windows 7 client area animation (SPI_SETCLIENTAREAANIMATION)")
-            user32.SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, ctypes.c_void_p(1), 0)
+            set_ok = user32.SystemParametersInfoW(SPI_SETCLIENTAREAANIMATION, 0, ctypes.c_void_p(1), 0)
+            log.info("SPI_SETCLIENTAREAANIMATION returned %s (err=%d)", bool(set_ok), kernel32.GetLastError())
+
+        log_win32_window_tree("before 0x052C", log)
 
         # 2. Trigger Explorer to split Progman -> WorkerW #1 + WorkerW #2
         self._progman_hwnd = user32.FindWindowW("Progman", None)
+        log.info("ensure_workerw(): Progman hwnd = 0x%X", self._progman_hwnd or 0)
         result = ctypes.c_ulong(0)
-        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0x0D, 0x01, SMTO_NORMAL, 1000, ctypes.byref(result))
-        user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0x00, 0x00, SMTO_NORMAL, 1000, ctypes.byref(result))
+        sm1 = user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0x0D, 0x01, SMTO_NORMAL, 1000, ctypes.byref(result))
+        err1 = kernel32.GetLastError()
+        sm2 = user32.SendMessageTimeoutW(self._progman_hwnd, 0x052C, 0x00, 0x00, SMTO_NORMAL, 1000, ctypes.byref(result))
+        err2 = kernel32.GetLastError()
+        log.info(
+            "ensure_workerw(): 0x052C(0x0D,0x01)->ret=%s err=%d | 0x052C(0x00,0x00)->ret=%s err=%d | out=%s",
+            sm1, err1, sm2, err2, result.value,
+        )
+
+        log_win32_window_tree("after 0x052C", log)
 
         # 3. Enumerate top-level windows to find WorkerW #1, then grab WorkerW #2 behind it
         workerw_defview = 0
@@ -434,16 +494,31 @@ class WinWallpaperEngine:
 
         cb = WNDENUMPROC(_enum_cb)
         user32.EnumWindows(cb, 0)
+        log.info(
+            "ensure_workerw(): workerw_defview=0x%X, next_WorkerW=0x%X",
+            workerw_defview or 0, workerw_target or 0,
+        )
 
         # Ensure Desktop Icon transparency (SysListView32) on WorkerW #1
         if workerw_defview:
             shell_view = user32.FindWindowExW(workerw_defview, 0, "SHELLDLL_DefView", None)
             if shell_view:
                 listview = user32.FindWindowExW(shell_view, 0, "SysListView32", None)
+                log.info(
+                    "ensure_workerw(): SHELLDLL_DefView=0x%X, SysListView32=0x%X",
+                    shell_view or 0, listview or 0,
+                )
                 if listview:
                     user32.SendMessageW(listview, LVM_SETBKCOLOR, 0, CLR_NONE)
                     user32.SendMessageW(listview, LVM_SETTEXTBKCOLOR, 0, CLR_NONE)
                     user32.RedrawWindow(listview, None, None, RDW_INVALIDATE | RDW_ERASE)
+        else:
+            # Also check if SHELLDLL_DefView lives directly inside Progman
+            prog_defview = user32.FindWindowExW(self._progman_hwnd, 0, "SHELLDLL_DefView", None) if self._progman_hwnd else 0
+            log.warning(
+                "ensure_workerw(): No top-level WorkerW hosting SHELLDLL_DefView! Progman->SHELLDLL_DefView=0x%X",
+                prog_defview or 0,
+            )
 
         # 4. Find WorkerW #2 (the top-level WorkerW sibling positioned AFTER workerw_defview)
         target_workerw = user32.FindWindowExW(0, workerw_defview, "WorkerW", None)
@@ -459,12 +534,23 @@ class WinWallpaperEngine:
                     target_workerw, 0, 0, 0, 0, 0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
                 )
-            user32.ShowWindow(target_workerw, 1)  # SW_SHOWNORMAL
+            sw_res = user32.ShowWindow(target_workerw, 1)  # SW_SHOWNORMAL
+            wrect = wintypes.RECT()
+            user32.GetWindowRect(target_workerw, ctypes.byref(wrect))
+            log.info(
+                "WorkerW #2 configured: style=0x%08X->0x%08X, ShowWindow=%s, visible=%s, rect=(%d,%d,%d,%d)",
+                style & 0xFFFFFFFF, new_style & 0xFFFFFFFF, bool(sw_res),
+                bool(user32.IsWindowVisible(target_workerw)),
+                wrect.left, wrect.top, wrect.right, wrect.bottom,
+            )
             self._worker_hwnd = target_workerw
             self._defview_parent_hwnd = workerw_defview
             return target_workerw
         else:
-            log.warning("WorkerW #2 sibling not found; falling back safely to Progman (never touching Taskbar).")
+            log.warning(
+                "WorkerW #2 sibling not found; falling back safely to Progman=0x%X (never touching Taskbar).",
+                self._progman_hwnd or 0,
+            )
             self._worker_hwnd = self._progman_hwnd
             self._defview_parent_hwnd = workerw_defview
             return self._progman_hwnd
@@ -573,6 +659,11 @@ class WinWallpaperEngine:
             log.warning("WinWallpaperEngine invoked on non-Windows platform")
             return False
 
+        log.info(
+            "WinWallpaperEngine.start(video=%r, speed=%.2f, volume=%d, mute=%s, fit=%s, fps=%s, autopause=%s, mpv_log=%s)",
+            video_path, speed, volume, mute, fit_mode, fps_limit, autopause, self.log_path,
+        )
+
         workerw_target = self.ensure_workerw()
         if not workerw_target:
             self.last_error_message = "Failed to locate Explorer desktop WorkerW target window."
@@ -581,8 +672,14 @@ class WinWallpaperEngine:
 
         rect = wintypes.RECT()
         user32.GetClientRect(workerw_target, ctypes.byref(rect))
-        screen_w = max(rect.right - rect.left, user32.GetSystemMetrics(SM_CXSCREEN))
-        screen_h = max(rect.bottom - rect.top, user32.GetSystemMetrics(SM_CYSCREEN))
+        sys_w = user32.GetSystemMetrics(SM_CXSCREEN)
+        sys_h = user32.GetSystemMetrics(SM_CYSCREEN)
+        screen_w = max(rect.right - rect.left, sys_w)
+        screen_h = max(rect.bottom - rect.top, sys_h)
+        log.info(
+            "Target container hwnd=0x%X client=(%d x %d), system_screen=(%d x %d), final=(%d x %d)",
+            workerw_target, rect.right - rect.left, rect.bottom - rect.top, sys_w, sys_h, screen_w, screen_h,
+        )
 
         backends = ["direct3d", "d3d11"]
 
@@ -596,6 +693,7 @@ class WinWallpaperEngine:
                 mpv_bin, mpv_title, video_path, backend,
                 speed, volume, mute, fit_mode, fps_limit
             )
+            log.info("Spawning mpv backend=%s: %s", backend, cmd)
 
             try:
                 self._proc = subprocess.Popen(
@@ -606,8 +704,10 @@ class WinWallpaperEngine:
                     stderr=subprocess.DEVNULL,
                 )
             except Exception as exc:
-                log.error("Failed to spawn mpv process: %s", exc)
+                log.exception("Failed to spawn mpv process (backend=%s): %s", backend, exc)
                 continue
+
+            log.info("Spawned mpv PID=%d (backend=%s, title=%r)", self._proc.pid, backend, mpv_title)
 
             # Poll for mpv top-level window creation (up to 3.0 seconds)
             mpv_hwnd = None
@@ -621,44 +721,75 @@ class WinWallpaperEngine:
                     break
                 time.sleep(0.05)
 
+            elapsed_poll = time.time() - start_poll
+            log.info(
+                "mpv window poll finished in %.2fs: hwnd=0x%X, proc.poll()=%s",
+                elapsed_poll, mpv_hwnd or 0, self._proc.poll(),
+            )
+
             if mpv_hwnd and self._proc.poll() is None:
                 try:
                     # 1. Adjust window style: strip popup/caption/thickframe, make WS_CHILD | WS_VISIBLE
-                    style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)
-                    style = (style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_VISIBLE
-                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, style)
+                    old_style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)
+                    new_style = (old_style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_VISIBLE
+                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, new_style)
+                    err_style = kernel32.GetLastError()
 
                     # 2. Adjust extended style: strip WS_EX_APPWINDOW, add WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-                    exstyle = user32.GetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE)
-                    exstyle = (exstyle & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE, exstyle)
+                    old_exstyle = user32.GetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE)
+                    new_exstyle = (old_exstyle & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE, new_exstyle)
+                    err_exstyle = kernel32.GetLastError()
 
                     # 3. Reparent into WorkerW #2
-                    user32.SetParent(mpv_hwnd, workerw_target)
+                    prev_parent = user32.SetParent(mpv_hwnd, workerw_target)
+                    err_parent = kernel32.GetLastError()
 
                     # 4. Position and size to cover desktop client area
-                    user32.SetWindowPos(
+                    swp_ok = user32.SetWindowPos(
                         mpv_hwnd, 0, 0, 0, screen_w, screen_h,
                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW
+                    )
+                    err_swp = kernel32.GetLastError()
+
+                    actual_parent = user32.GetParent(mpv_hwnd)
+                    actual_vis = bool(user32.IsWindowVisible(mpv_hwnd))
+                    mrect = wintypes.RECT()
+                    user32.GetWindowRect(mpv_hwnd, ctypes.byref(mrect))
+
+                    log.info(
+                        "Reparent metrics: style=0x%08X->0x%08X(err=%d), ex=0x%08X->0x%08X(err=%d), "
+                        "SetParent prev=0x%X actual_parent=0x%X(err=%d), SetWindowPos=%s(err=%d), "
+                        "vis=%s, rect=(%d,%d,%d,%d)",
+                        old_style & 0xFFFFFFFF, new_style & 0xFFFFFFFF, err_style,
+                        old_exstyle & 0xFFFFFFFF, new_exstyle & 0xFFFFFFFF, err_exstyle,
+                        prev_parent or 0, actual_parent or 0, err_parent,
+                        bool(swp_ok), err_swp, actual_vis,
+                        mrect.left, mrect.top, mrect.right, mrect.bottom,
                     )
 
                     self.mpv_hwnd = mpv_hwnd
                     self.host_hwnd = mpv_hwnd
                     log.info(
-                        "mpv window 0x%X successfully reparented into WorkerW #2 (0x%X) on backend %s (PID %s)",
+                        "mpv window 0x%X successfully reparented into container (0x%X) on backend %s (PID %s)",
                         mpv_hwnd, workerw_target, backend, self._proc.pid
                     )
+                    log_win32_window_tree(f"after reparent ({backend})", log)
 
                     self._autopause = WinAutoPauseWatcher(self._ipc, mode=autopause)
                     self._autopause.start()
+                    self._start_health_probe(self._proc, self._ipc, mpv_hwnd, backend)
                     return True
                 except Exception as exc:
-                    log.error("Failed to reparent mpv window: %s", exc)
+                    log.exception("Failed to reparent mpv window: %s", exc)
 
             # Process exited or failed window creation
             rc = self._proc.poll()
             self._proc = None
             self._destroy_mpv_window()
+
+            mpv_tail = read_log_tail(self.log_path, max_lines=35)
+            log.warning("mpv tail (%s) after backend=%s failure:\n%s", self.log_path, backend, mpv_tail)
 
             if rc is not None:
                 unsigned_rc = rc & 0xFFFFFFFF
@@ -669,12 +800,53 @@ class WinWallpaperEngine:
                     )
                     log.error(self.last_error_message)
                     return False
-                log.warning("Backend %s failed with exit code %s; trying fallback...", backend, rc)
+                log.warning("Backend %s failed with exit code %s (0x%08X); trying fallback...", backend, rc, unsigned_rc)
 
         self.last_error_message = f"mpv failed to initialize video output. Check {self.log_path}"
         log.error(self.last_error_message)
         self.stop(restore_wallpaper=True)
         return False
+
+    def _start_health_probe(
+        self,
+        proc: subprocess.Popen,
+        ipc: WinMpvIPC,
+        mpv_hwnd: int,
+        backend: str,
+    ) -> None:
+        """Schedule non-blocking post-launch probes to log real playback/VO status."""
+        def _probe():
+            props = [
+                "pause", "core-idle", "vo-configured", "current-vo",
+                "hwdec-current", "video-params/w", "video-params/h", "time-pos", "eof-reached",
+            ]
+            for delay in (1.5, 4.0):
+                time.sleep(delay if delay == 1.5 else 2.5)
+                if self._proc is not proc:
+                    return
+                rc = proc.poll()
+                win_ok = bool(user32.IsWindow(mpv_hwnd))
+                win_vis = bool(user32.IsWindowVisible(mpv_hwnd)) if win_ok else False
+                parent_hwnd = user32.GetParent(mpv_hwnd) if win_ok else 0
+                mrect = wintypes.RECT()
+                if win_ok:
+                    user32.GetWindowRect(mpv_hwnd, ctypes.byref(mrect))
+                state = {}
+                if rc is None:
+                    for p in props:
+                        res = ipc.send_command(["get_property", p])
+                        state[p] = res.get("data") if res else None
+                log.info(
+                    "mpv health probe (+%.1fs, backend=%s, pid=%d, rc=%s): "
+                    "IsWindow=%s vis=%s parent=0x%X rect=(%d,%d,%d,%d) ipc=%s",
+                    delay, backend, proc.pid, rc, win_ok, win_vis, parent_hwnd or 0,
+                    mrect.left, mrect.top, mrect.right, mrect.bottom, state,
+                )
+                if rc is not None:
+                    log.warning("mpv exited unexpectedly (rc=%s). Tail:\n%s", rc, read_log_tail(self.log_path, 30))
+                    return
+
+        threading.Thread(target=_probe, daemon=True, name="mpv-health-probe").start()
 
     def _destroy_mpv_window(self) -> None:
         if sys.platform == "win32" and self.mpv_hwnd and user32.IsWindow(self.mpv_hwnd):
@@ -686,22 +858,30 @@ class WinWallpaperEngine:
         """
         Cleanly terminates mpv, destroys mpv child window, and restores desktop wallpaper.
         """
+        log.info(
+            "WinWallpaperEngine.stop(restore_wallpaper=%s, has_proc=%s, mpv_hwnd=0x%X)",
+            restore_wallpaper, self._proc is not None, self.mpv_hwnd or 0,
+        )
         if self._autopause:
             self._autopause.stop()
             self._autopause = None
 
         if self._proc is not None:
-            if self._proc.poll() is None:
+            pid = self._proc.pid
+            rc = self._proc.poll()
+            if rc is None:
                 if self._ipc:
                     self._ipc.send_command(["quit"])
                 try:
-                    self._proc.wait(timeout=0.4)
+                    rc = self._proc.wait(timeout=0.4)
                 except subprocess.TimeoutExpired:
+                    log.info("mpv PID=%d did not quit cleanly via IPC; force-killing", pid)
                     self._proc.kill()
                     try:
-                        self._proc.wait(timeout=1.0)
+                        rc = self._proc.wait(timeout=1.0)
                     except subprocess.TimeoutExpired:
                         pass
+            log.info("mpv PID=%d stopped (exit_code=%s)", pid, rc)
             self._proc = None
 
         self._ipc = None
@@ -719,7 +899,7 @@ class WinWallpaperEngine:
         mute: bool = True,
         fit_mode: str = "fill",
         fps_limit: str = "native",
-        autopause: str = "focus",
+        autopause: str = "maximized",
     ) -> bool:
         self.stop(restore_wallpaper=False)
         return self.start(video_path, speed, volume, mute, fit_mode, fps_limit, autopause)
@@ -734,26 +914,33 @@ class WinWallpaperEngine:
             for hwnd in (self._worker_hwnd, self._defview_parent_hwnd, self._progman_hwnd):
                 if hwnd and user32.IsWindow(hwnd):
                     user32.RedrawWindow(hwnd, None, None, flags)
+            log.debug("Refreshed static desktop wallpaper")
         except Exception as exc:
-            log.debug("refresh_desktop_wallpaper error: %s", exc)
+            log.warning("refresh_desktop_wallpaper error: %s", exc)
 
     def toggle_pause(self) -> bool:
         if not self._ipc or not self._ipc.is_alive():
+            log.warning("toggle_pause: mpv IPC not alive")
             return False
         res = self._ipc.send_command(["get_property", "pause"])
         if res and "data" in res:
             is_paused = bool(res["data"])
-            return self._ipc.resume() if is_paused else self._ipc.pause()
+            ok = self._ipc.resume() if is_paused else self._ipc.pause()
+            log.info("toggle_pause: %s -> %s (ok=%s)", "RESUMED" if is_paused else "PAUSED", not is_paused, ok)
+            return ok
         return False
 
     def set_volume(self, vol: int) -> None:
         if self._ipc:
-            self._ipc.set_volume(vol)
+            ok = self._ipc.set_volume(vol)
+            log.debug("set_volume(%d) -> ok=%s", vol, ok)
 
     def set_speed(self, speed: float) -> None:
         if self._ipc:
-            self._ipc.set_speed(speed)
+            ok = self._ipc.set_speed(speed)
+            log.debug("set_speed(%.2f) -> ok=%s", speed, ok)
 
     def set_mute(self, mute: bool) -> None:
         if self._ipc:
-            self._ipc.set_mute(mute)
+            ok = self._ipc.set_mute(mute)
+            log.info("set_mute(%s) -> ok=%s", mute, ok)
