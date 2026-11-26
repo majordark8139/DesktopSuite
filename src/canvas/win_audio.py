@@ -110,6 +110,14 @@ class WinAudioStream:
         self._peak_history = 0.05
         self._hanning = np.hanning(_CHUNK_SAMPLES).astype(np.float32)
 
+        fft_len = _CHUNK_SAMPLES // 2
+        bins = np.logspace(0.5, np.log10(fft_len - 1), num_bands + 1).astype(int)
+        self._band_slices = [
+            (max(0, int(bins[i])), max(max(0, int(bins[i])) + 1, int(bins[i + 1])))
+            for i in range(num_bands)
+        ]
+        self._weights = np.linspace(1.0, 0.65, num_bands, dtype=np.float32)
+
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -272,7 +280,9 @@ class WinAudioStream:
                 )
                 release_buffer = _vcall(cap_ptr, 4, ctypes.HRESULT, wintypes.DWORD)
 
-                # Ring buffer for FFT processing
+                # Accumulate incoming audio slices cheaply until _CHUNK_SAMPLES is ready
+                pending_slices: list[np.ndarray] = []
+                pending_len = 0
                 pcm_buffer = np.zeros(0, dtype=np.float32)
 
                 # Pre-allocated 64-bit pointers for Win7 x64 GetBuffer
@@ -291,6 +301,7 @@ class WinAudioStream:
                 chunks_processed = 0
                 last_rms = 0.0
                 last_max_amp = 0.0
+                consecutive_silent_polls = 0
 
                 while not self._stop_event.is_set():
                     hr = get_next_packet(ctypes.byref(packetFrames))
@@ -305,6 +316,7 @@ class WinAudioStream:
 
                     if packetFrames.value == 0:
                         empty_polls += 1
+                        consecutive_silent_polls += 1
                         self._fallback_step()
                         now = time.monotonic()
                         if now - last_heartbeat >= 3.0:
@@ -318,7 +330,7 @@ class WinAudioStream:
                             )
                             empty_polls = packets_read = silent_packets = frames_total = chunks_processed = 0
                             last_heartbeat = now
-                        time.sleep(0.01)
+                        time.sleep(0.025 if consecutive_silent_polls > 12 else 0.015)
                         continue
 
                     while packetFrames.value > 0 and not self._stop_event.is_set():
@@ -353,8 +365,10 @@ class WinAudioStream:
 
                         if dwFlags.value & 0x02:  # AUDCLNT_BUFFERFLAGS_SILENT
                             silent_packets += 1
-                            samples = np.zeros(total_samples, dtype=np.float32)
+                            consecutive_silent_polls += 1
+                            samples = np.zeros(n_frames, dtype=np.float32)
                         else:
+                            consecutive_silent_polls = 0
                             if is_float:
                                 raw_array = (ctypes.c_float * total_samples).from_address(pData.value)
                                 samples = np.frombuffer(raw_array, dtype=np.float32).copy()
@@ -365,10 +379,11 @@ class WinAudioStream:
                                 raw_array = (ctypes.c_int16 * total_samples).from_address(pData.value)
                                 samples = np.frombuffer(raw_array, dtype=np.int16).astype(np.float32) / 32768.0
 
-                        if channels > 1:
-                            samples = samples.reshape(-1, channels).mean(axis=1)
+                            if channels > 1:
+                                samples = samples.reshape(-1, channels).mean(axis=1)
 
-                        pcm_buffer = np.concatenate((pcm_buffer, samples))
+                        pending_slices.append(samples)
+                        pending_len += len(samples)
 
                         hr_rel = release_buffer(numFramesRead.value)
                         if hr_rel != 0:
@@ -383,16 +398,28 @@ class WinAudioStream:
                                 log.warning("GetNextPacketSize(inner) error: hr=0x%08X (suppressed=%d)", hr_next & 0xFFFFFFFF, suppressed)
                             break
 
+                    if pending_slices:
+                        if len(pcm_buffer) > 0:
+                            pcm_buffer = np.concatenate([pcm_buffer, *pending_slices])
+                        elif len(pending_slices) == 1:
+                            pcm_buffer = pending_slices[0]
+                        else:
+                            pcm_buffer = np.concatenate(pending_slices)
+                        pending_slices.clear()
+                        pending_len = 0
+
                     while len(pcm_buffer) >= _CHUNK_SAMPLES:
                         chunk = pcm_buffer[:_CHUNK_SAMPLES]
                         pcm_buffer = pcm_buffer[_CHUNK_SAMPLES:]
-                        last_rms = float(np.sqrt(np.mean(chunk ** 2)))
-                        last_max_amp = float(np.max(np.abs(chunk)))
                         chunks_processed += 1
-                        self._process_chunk(chunk, samplerate)
+                        amp = self._process_chunk(chunk, samplerate)
+                        if amp is not None:
+                            last_max_amp = amp
 
                     now = time.monotonic()
                     if now - last_heartbeat >= 3.0:
+                        if len(pcm_buffer) > 0:
+                            last_rms = float(np.sqrt(np.mean(pcm_buffer ** 2)))
                         with self.lock:
                             max_bar = float(np.max(self.bars))
                         log.info(
@@ -404,7 +431,7 @@ class WinAudioStream:
                         empty_polls = packets_read = silent_packets = frames_total = chunks_processed = 0
                         last_heartbeat = now
 
-                    time.sleep(0.01)
+                    time.sleep(0.025 if consecutive_silent_polls > 12 else 0.015)
 
             except Exception as exc:
                 log.warning("WASAPI loopback error: %s; reconnecting in 0.5s...", exc, exc_info=True)
@@ -422,39 +449,34 @@ class WinAudioStream:
                 except Exception:
                     pass
 
-    def _process_chunk(self, chunk: np.ndarray, samplerate: int) -> None:
+    def _process_chunk(self, chunk: np.ndarray, samplerate: int) -> Optional[float]:
         if len(chunk) < _CHUNK_SAMPLES:
-            return
+            return None
 
-        max_amp = float(np.max(np.abs(chunk)))
+        max_amp = float(np.max(np.abs(chunk[:_CHUNK_SAMPLES])))
         if max_amp < 1e-5:
             with self.lock:
                 self._smooth_bands *= 0.85
                 self._update_bars()
-            return
+            return max_amp
 
         windowed = chunk[:_CHUNK_SAMPLES] * self._hanning
         fft = np.abs(np.fft.rfft(windowed, n=_CHUNK_SAMPLES))[:_CHUNK_SAMPLES // 2]
 
-        freq_bins = np.logspace(0.5, np.log10(len(fft) - 1), self.num_bands + 1).astype(int)
-        band_vals = np.zeros(self.num_bands, dtype=np.float32)
-        for i in range(self.num_bands):
-            lo = max(0, freq_bins[i])
-            hi = max(lo + 1, freq_bins[i + 1])
+        band_vals = np.empty(self.num_bands, dtype=np.float32)
+        for i, (lo, hi) in enumerate(self._band_slices):
             band_vals[i] = float(np.mean(fft[lo:hi]))
 
         cur_peak = float(np.max(band_vals))
         self._peak_history = max(self._peak_history * _PEAK_DECAY, cur_peak, 0.05)
         normalized = np.clip(band_vals / self._peak_history, 0.0, 1.0)
         shaped = (normalized ** 1.30) * (self.intensity / 0.30)
-
-        # High frequency attenuation
-        weights = np.linspace(1.0, 0.65, self.num_bands, dtype=np.float32)
-        shaped *= weights
+        shaped *= self._weights
 
         with self.lock:
             self._smooth_bands += _ALPHA * (shaped - self._smooth_bands)
             self._update_bars()
+        return max_amp
 
     def _update_bars(self) -> None:
         left = self._smooth_bands[::-1]

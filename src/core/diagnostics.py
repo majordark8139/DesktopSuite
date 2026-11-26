@@ -612,16 +612,22 @@ def _log_windows_snapshot(diag_log: logging.Logger) -> None:
         mpv_bin = WinWallpaperEngine.find_mpv()
         diag_log.info("Resolved mpv binary: %s", mpv_bin)
         if mpv_bin:
-            proc = subprocess.run(
-                [mpv_bin, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=3.0,
-                creationflags=0x08000000,
-                check=False,
-            )
-            first_line = (proc.stdout or proc.stderr or "").splitlines()[:2]
-            diag_log.info("mpv --version (rc=%s): %s", proc.returncode, " | ".join(first_line))
+            def _probe_mpv_version() -> None:
+                try:
+                    proc = subprocess.run(
+                        [mpv_bin, "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=3.0,
+                        creationflags=0x08000000,
+                        check=False,
+                    )
+                    first_line = (proc.stdout or proc.stderr or "").splitlines()[:2]
+                    diag_log.info("mpv --version (rc=%s): %s", proc.returncode, " | ".join(first_line))
+                except Exception as inner_exc:
+                    diag_log.warning("mpv --version probe failed: %s", inner_exc)
+
+            threading.Thread(target=_probe_mpv_version, daemon=True, name="mpv-ver-probe").start()
     except Exception as exc:
         diag_log.warning("mpv probe failed: %s", exc)
 

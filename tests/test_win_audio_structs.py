@@ -132,8 +132,82 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             self.assertGreater(vis_px2.alpha(), 150)
             self.assertGreater(vis_px2.red(), 150)
             del blit_img2
+
+            # Verify cached QFontMetricsF lookup + partial surface rect copy
+            reg = surface.font_registry
+            p1 = reg.resolve_qfont_with_metrics("Bebas Neue", 0, 0, 24.0)
+            p2 = reg.resolve_qfont_with_metrics("Bebas Neue", 0, 0, 24.0)
+            self.assertIs(p1, p2)
         finally:
             surface.dispose()
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and _HAS_NUMPY and _HAS_CAIRO_QT,
+        "Requires win32 + PyQt5 + cairo + numpy",
+    )
+    def test_win_canvas_static_cache_and_app_icon(self):
+        from src.canvas.win_window import WinDesktopCanvasWindow
+        from src.themes.registry import OriginalCursiveTheme
+        from src.windows.app import load_app_icon
+
+        app = QApplication.instance() or QApplication([])
+        self.assertIsNotNone(app)
+
+        icon = load_app_icon()
+        self.assertFalse(icon.isNull())
+        self.assertGreaterEqual(len(icon.availableSizes()), 3)
+
+        class _MemCfg:
+            def __init__(self) -> None:
+                self.data = {
+                    "canvas.active_theme": "Original Cursive",
+                    "canvas.clock_color": "#FF0000",
+                    "canvas.date_color": "#D0D0D0",
+                    "canvas.visualizer_color": "#FF0000",
+                    "canvas.visualizer_intensity": 0.65,
+                    "canvas.scale": 1.0,
+                }
+
+            def get(self, key: str, default=None):
+                return self.data.get(key, default)
+
+            def set(self, key: str, val) -> None:
+                self.data[key] = val
+
+            def save(self) -> None:
+                pass
+
+        class _DummyAudio:
+            def __init__(self) -> None:
+                import threading
+                self.lock = threading.Lock()
+                self.bars = np.zeros(27, dtype=np.float32)
+
+        audio = _DummyAudio()
+        win = WinDesktopCanvasWindow(_MemCfg(), OriginalCursiveTheme(), audio_stream=audio)
+        try:
+            win._timer.stop()
+            win._on_tick()
+            self.assertEqual(win._static_rebuilds, 1)
+            win.repaint()
+            first_paints = win._paint_count
+
+            # Idle & silent tick should skip full repaints and never rebuild static text
+            win._on_tick()
+            self.assertEqual(win._static_rebuilds, 1)
+
+            # Audio bars arriving should animate visualizer without rebuilding static text
+            with audio.lock:
+                audio.bars[:] = 1.0
+            win._on_tick()
+            self.assertEqual(win._static_rebuilds, 1)
+            self.assertFalse(win._vis_dirty_rect.isEmpty())
+            win.repaint(win._vis_dirty_rect)
+            self.assertGreater(win._paint_count, first_paints)
+            self.assertEqual(win._static_rebuilds, 1)
+        finally:
+            win.stop()
+            app.processEvents()
 
 
 if __name__ == "__main__":

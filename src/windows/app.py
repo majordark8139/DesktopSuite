@@ -6,12 +6,15 @@ Windows application controller coordinating wallpaper, canvas, and GUI.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QIcon, QPixmap
 from PyQt5.QtWidgets import QApplication
 
 from src.core.config import ConfigManager
@@ -20,7 +23,6 @@ from src.core.diagnostics import (
     log_environment_snapshot,
     uninstall_qt_message_handler,
 )
-from src.core.fonts import register_bundled_fonts
 from src.themes.registry import REGISTRY
 from src.wallpaper.win_engine import WinWallpaperEngine
 from src.canvas.win_audio import WinAudioStream
@@ -30,21 +32,61 @@ from src.windows.dependencies import run_first_launch_check
 log = logging.getLogger(__name__)
 
 
+def load_app_icon() -> QIcon:
+    """Build a multi-resolution QIcon from bundled PNG/ICO assets for Windows 7 taskbar & titlebar."""
+    icon = QIcon()
+    search_dirs: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        search_dirs.append(exe_dir / "assets" / "icons")
+        search_dirs.append(exe_dir / "_internal" / "assets" / "icons")
+        if hasattr(sys, "_MEIPASS"):
+            search_dirs.append(Path(sys._MEIPASS) / "assets" / "icons")
+    search_dirs.append(Path(__file__).resolve().parent.parent.parent / "assets" / "icons")
+    search_dirs.append(Path.cwd() / "assets" / "icons")
+
+    png_path: Optional[Path] = None
+    ico_path: Optional[Path] = None
+    for d in search_dirs:
+        if png_path is None and (d / "desktop-suite.png").is_file():
+            png_path = d / "desktop-suite.png"
+        if ico_path is None and (d / "desktop-suite.ico").is_file():
+            ico_path = d / "desktop-suite.ico"
+
+    if png_path is not None:
+        base_pm = QPixmap(str(png_path))
+        if not base_pm.isNull():
+            for sz in (16, 20, 24, 32, 48, 64, 128, 256):
+                icon.addPixmap(base_pm.scaled(sz, sz, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    if ico_path is not None:
+        icon.addFile(str(ico_path))
+    return icon
+
+
 class WinAppController:
     """
     Central controller managing all DesktopSuite subsystems on Windows.
     """
 
     def __init__(self) -> None:
-        # 0. Enable Qt FreeType font engine on Windows 7 & capture Qt internal logs
+        # 0. Enable Qt FreeType font engine on Windows 7 & explicit AppUserModelID for taskbar grouping/icon
         from src.core.win7_font_engine import enable_qt_freetype_on_win7, get_font_registry
         enable_qt_freetype_on_win7()
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("DesktopSuite.ControlCenter.1")
+            except Exception:
+                pass
         install_qt_message_handler()
 
         # 1. Initialize QApplication before any QWidgets
         self._gui_app = QApplication.instance()
         if self._gui_app is None:
             self._gui_app = QApplication(sys.argv)
+
+        self.app_icon = load_app_icon()
+        if not self.app_icon.isNull():
+            self._gui_app.setWindowIcon(self.app_icon)
 
         # Install inter-process activation filter for single-instance waking
         from src.core.win7_single_instance import ActivateMessageFilter
@@ -75,11 +117,7 @@ class WinAppController:
         pal.setColor(QPalette.HighlightedText, QColor("#1e1e2e"))
         self._gui_app.setPalette(pal)
 
-        # 2. Register bundled fonts with Windows GDI
-        gdi_ok = register_bundled_fonts()
-        log.info("register_bundled_fonts() returned %s", gdi_ok)
-
-        # 3. Asynchronously inspect dependencies (zero blocking on startup)
+        # 2. Asynchronously inspect dependencies (zero blocking on startup)
         run_first_launch_check(background=True)
 
         self.cfg = ConfigManager()
@@ -195,8 +233,8 @@ class WinAppController:
 
     def start_all(self) -> None:
         log.info("Controller.start_all()")
-        self.start_canvas()
         self.start_wallpaper()
+        self.start_canvas()
 
     def stop_all(self) -> None:
         if self._stopping:

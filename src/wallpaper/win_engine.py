@@ -199,6 +199,15 @@ if sys.platform == "win32":
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.GetWindowRect.restype = wintypes.BOOL
 
+    user32.EnumWindows.argtypes = [WNDENUMPROC, LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.restype = ctypes.c_int
+
     user32.GetLayeredWindowAttributes.argtypes = [
         wintypes.HWND,
         ctypes.POINTER(wintypes.COLORREF),
@@ -769,6 +778,9 @@ class WinWallpaperEngine:
             mpv_bin,
             f"--title={mpv_title}",
             *vo_flags,
+            "--no-config",
+            "--load-scripts=no",
+            "--no-sub",
             "--loop-file=inf",
             "--cache=no",
             "--demuxer-max-bytes=15M",
@@ -900,6 +912,7 @@ class WinWallpaperEngine:
                 try:
                     # Hide while top-level and strip taskbar button before reparenting into WorkerW #2
                     user32.ShowWindow(mpv_hwnd, SW_HIDE)
+                    _delete_taskbar_tab(mpv_hwnd)
 
                     # 1. Adjust window style: strip popup/caption/thickframe/visible until child-reparented
                     old_style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)
@@ -917,11 +930,10 @@ class WinWallpaperEngine:
                     user32.SetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE, new_exstyle)
                     err_exstyle = kernel32.GetLastError()
 
-                    _delete_taskbar_tab(mpv_hwnd)
-
-                    # 3. Reparent into WorkerW #2 while still hidden, then reveal as child window
+                    # 3. Reparent into WorkerW #2 while still hidden
                     prev_parent = user32.SetParent(mpv_hwnd, workerw_target)
                     err_parent = kernel32.GetLastError()
+                    _delete_taskbar_tab(mpv_hwnd)
 
                     # 4. Position, size, and show without activating
                     swp_ok = user32.SetWindowPos(
@@ -934,6 +946,8 @@ class WinWallpaperEngine:
                         mpv_hwnd, None, None,
                         RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW,
                     )
+                    # Purge any Explorer shell-hook taskbar entry queued during creation/show
+                    self._scrub_mpv_taskbar_windows(self._proc.pid, mpv_hwnd, workerw_target, screen_w, screen_h)
 
                     actual_parent = user32.GetParent(mpv_hwnd)
                     actual_vis = bool(user32.IsWindowVisible(mpv_hwnd))
@@ -963,7 +977,9 @@ class WinWallpaperEngine:
                         self._ipc, mode=autopause, mpv_pid=self._proc.pid,
                     )
                     self._autopause.start()
-                    self._start_health_probe(self._proc, self._ipc, mpv_hwnd, backend)
+                    self._start_health_probe(
+                        self._proc, self._ipc, mpv_hwnd, workerw_target, screen_w, screen_h, backend
+                    )
                     return True
                 except Exception as exc:
                     log.exception("Failed to reparent mpv window: %s", exc)
@@ -992,44 +1008,131 @@ class WinWallpaperEngine:
         self.stop(restore_wallpaper=True)
         return False
 
+    def _scrub_mpv_taskbar_windows(
+        self,
+        pid: int,
+        main_hwnd: int,
+        workerw_target: int,
+        screen_w: int,
+        screen_h: int,
+    ) -> list[str]:
+        """
+        Ensure neither `main_hwnd` nor any auxiliary top-level window owned by `pid`
+        holds a Windows taskbar button or non-child/appwindow style.
+        """
+        if sys.platform != "win32":
+            return []
+
+        found_top: list[str] = []
+        _delete_taskbar_tab(main_hwnd)
+
+        def _enum_mpv_cb(hwnd, _lparam):
+            win_pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(win_pid))
+            if win_pid.value != pid:
+                return True
+            cls_buf = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(hwnd, cls_buf, 128)
+            st = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
+            ex = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+            vis = bool(user32.IsWindowVisible(hwnd))
+            par = user32.GetParent(hwnd) or 0
+            found_top.append(
+                f"hwnd=0x{hwnd:X}(cls={cls_buf.value!r},vis={vis},par=0x{par:X},"
+                f"st=0x{st & 0xFFFFFFFF:08X},ex=0x{ex & 0xFFFFFFFF:08X})"
+            )
+            if hwnd == main_hwnd:
+                fixed_st = (st & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_CLIPSIBLINGS
+                fixed_ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                if fixed_st != st:
+                    user32.SetWindowLongPtrW(hwnd, GWL_STYLE, fixed_st)
+                if fixed_ex != ex:
+                    user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, fixed_ex)
+                if par != workerw_target:
+                    user32.SetParent(hwnd, workerw_target)
+                    user32.SetWindowPos(
+                        hwnd, 0, 0, 0, screen_w, screen_h,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                    )
+            else:
+                # Any secondary top-level window created by mpv must never sit in the taskbar
+                if vis or not (ex & WS_EX_TOOLWINDOW) or (ex & WS_EX_APPWINDOW):
+                    user32.SetWindowLongPtrW(
+                        hwnd, GWL_EXSTYLE, (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+                    )
+                    if vis:
+                        user32.ShowWindow(hwnd, SW_HIDE)
+            _delete_taskbar_tab(hwnd)
+            return True
+
+        try:
+            cb = WNDENUMPROC(_enum_mpv_cb)
+            user32.EnumWindows(cb, 0)
+        except Exception as exc:
+            log.debug("EnumWindows taskbar scrub error (pid=%d): %s", pid, exc)
+        return found_top
+
     def _start_health_probe(
         self,
         proc: subprocess.Popen,
         ipc: WinMpvIPC,
         mpv_hwnd: int,
+        workerw_target: int,
+        screen_w: int,
+        screen_h: int,
         backend: str,
     ) -> None:
-        """Schedule non-blocking post-launch probes to log real playback/VO status."""
+        """Schedule non-blocking post-launch scrubs (removing delayed taskbar tabs) and health probes."""
         def _probe():
             props = [
                 "pause", "core-idle", "vo-configured", "current-vo",
                 "hwdec-current", "video-params/w", "video-params/h", "time-pos", "eof-reached",
             ]
-            for delay in (1.5, 4.0):
-                time.sleep(delay if delay == 1.5 else 2.5)
+            # Early intervals flush Explorer's async HSHELL_WINDOWCREATED & mpv's vo_w32_config;
+            # later intervals inspect live IPC state.
+            schedule_steps = (
+                (0.20, False),
+                (0.45, False),
+                (0.85, True),
+                (1.50, False),
+                (2.00, True),
+            )
+            elapsed = 0.0
+            for wait_dt, run_ipc in schedule_steps:
+                time.sleep(wait_dt)
+                elapsed += wait_dt
                 if self._proc is not proc:
                     return
                 rc = proc.poll()
+                if rc is not None:
+                    log.warning("mpv exited unexpectedly (rc=%s). Tail:\n%s", rc, read_log_tail(self.log_path, 30))
+                    return
+
+                scrubbed = self._scrub_mpv_taskbar_windows(
+                    proc.pid, mpv_hwnd, workerw_target, screen_w, screen_h
+                )
+                if not run_ipc:
+                    continue
+
                 win_ok = bool(user32.IsWindow(mpv_hwnd))
                 win_vis = bool(user32.IsWindowVisible(mpv_hwnd)) if win_ok else False
                 parent_hwnd = user32.GetParent(mpv_hwnd) if win_ok else 0
+                st_cur = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE) & 0xFFFFFFFF if win_ok else 0
+                ex_cur = user32.GetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE) & 0xFFFFFFFF if win_ok else 0
                 mrect = wintypes.RECT()
                 if win_ok:
                     user32.GetWindowRect(mpv_hwnd, ctypes.byref(mrect))
                 state = {}
-                if rc is None:
-                    for p in props:
-                        res = ipc.send_command(["get_property", p])
-                        state[p] = res.get("data") if res else None
+                for p in props:
+                    res = ipc.send_command(["get_property", p])
+                    state[p] = res.get("data") if res else None
                 log.info(
                     "mpv health probe (+%.1fs, backend=%s, pid=%d, rc=%s): "
-                    "IsWindow=%s vis=%s parent=0x%X rect=(%d,%d,%d,%d) ipc=%s",
-                    delay, backend, proc.pid, rc, win_ok, win_vis, parent_hwnd or 0,
-                    mrect.left, mrect.top, mrect.right, mrect.bottom, state,
+                    "IsWindow=%s vis=%s parent=0x%X st=0x%08X ex=0x%08X rect=(%d,%d,%d,%d) top_wins=%s ipc=%s",
+                    elapsed, backend, proc.pid, rc, win_ok, win_vis, parent_hwnd or 0,
+                    st_cur, ex_cur, mrect.left, mrect.top, mrect.right, mrect.bottom,
+                    scrubbed, state,
                 )
-                if rc is not None:
-                    log.warning("mpv exited unexpectedly (rc=%s). Tail:\n%s", rc, read_log_tail(self.log_path, 30))
-                    return
 
         threading.Thread(target=_probe, daemon=True, name="mpv-health-probe").start()
 

@@ -19,9 +19,9 @@ from typing import Any, Optional
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QGroupBox, QPushButton, QLabel, QSlider, QCheckBox,
-    QComboBox, QFileDialog, QColorDialog, QScrollArea, QFrame
+    QComboBox, QFileDialog, QColorDialog, QScrollArea, QFrame, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtCore import Qt, QEvent, QTimer
 from PyQt5.QtGui import QColor, QFont, QIcon, QPixmap, QPalette
 
 from src.core.diagnostics import get_rate_limiter
@@ -49,7 +49,7 @@ _WIN_DARK_QSS = """
 QMainWindow, QWidget#CentralWidget, QWidget#tab_wp, QWidget#tab_cv, QWidget#content_wp, QWidget#content_cv {
     background-color: #1e1e2e;
     color: #cdd6f4;
-    font-family: 'Segoe UI', 'Segoe UI Web (West European)', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+    font-family: 'Segoe UI', Arial, sans-serif;
     font-size: 12px;
 }
 QScrollArea {
@@ -60,31 +60,56 @@ QScrollArea > QWidget {
     background-color: #1e1e2e;
     border: none;
 }
+QScrollBar:vertical {
+    background-color: #181825;
+    width: 8px;
+    margin: 2px 0;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical {
+    background-color: #45475a;
+    min-height: 28px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover {
+    background-color: #89b4fa;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: none;
+}
 QTabWidget::pane {
-    border: none;
+    border: 1px solid #313244;
+    border-radius: 8px;
     background-color: #1e1e2e;
+    padding-top: 2px;
 }
 QTabBar::tab {
     background-color: #181825;
     color: #a6adc8;
-    padding: 10px 24px;
+    padding: 9px 14px;
     font-size: 13px;
     font-weight: bold;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
     margin-right: 4px;
-    min-width: 150px;
 }
 QTabBar::tab:selected {
-    background-color: #1e1e2e;
+    background-color: #252839;
     color: #89b4fa;
-    border-bottom: 3px solid #89b4fa;
+    border-bottom: 2px solid #89b4fa;
+}
+QTabBar::tab:hover:!selected {
+    background-color: #1f2232;
+    color: #cdd6f4;
 }
 QGroupBox {
     background-color: #252839;
     border-radius: 8px;
-    margin-top: 18px;
-    padding: 14px;
+    margin-top: 16px;
+    padding: 16px 12px 12px 12px;
     font-weight: bold;
     color: #89b4fa;
     border: 1px solid #363a4f;
@@ -92,7 +117,8 @@ QGroupBox {
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    padding: 0 8px;
+    left: 10px;
+    padding: 0 6px;
     color: #89b4fa;
     font-size: 12px;
     font-weight: bold;
@@ -101,7 +127,7 @@ QPushButton {
     background-color: #313244;
     color: #cdd6f4;
     border-radius: 6px;
-    padding: 7px 16px;
+    padding: 7px 12px;
     font-weight: bold;
     border: 1px solid #45475a;
 }
@@ -135,7 +161,7 @@ QComboBox {
     background-color: #313244;
     color: #cdd6f4;
     border-radius: 6px;
-    padding: 5px 12px;
+    padding: 5px 10px;
     border: 1px solid #45475a;
     min-height: 24px;
 }
@@ -169,6 +195,18 @@ QCheckBox::indicator:checked {
 QLabel {
     color: #cdd6f4;
 }
+QLabel[role="field-label"] {
+    color: #bac2de;
+    font-weight: 600;
+}
+QLabel[role="value-badge"] {
+    background-color: #1e1e2e;
+    border: 1px solid #363a4f;
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: #89b4fa;
+    font-weight: bold;
+}
 """
 
 
@@ -193,19 +231,44 @@ class ControlCenterWindow(QMainWindow):
         self.cfg = controller.cfg
         self._building = True
         self._current_hotkey = self.cfg.get("wallpaper.shortcut", "Win + W (Default)")
+        self._cfg_dirty = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(300)
+        self._save_timer.timeout.connect(self._flush_cfg_save)
 
         self.setWindowTitle("Desktop Suite Control Center")
-        self.resize(660, 780)
-        self.setMinimumSize(580, 660)
+        app_icon = getattr(controller, "app_icon", None)
+        if app_icon is not None and not app_icon.isNull():
+            self.setWindowIcon(app_icon)
+
+        # Screen-aware responsive sizing: never overflows 1366x768 work area
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        if avail is not None:
+            init_w = min(650, max(500, avail.width() - 120))
+            init_h = min(690, max(480, avail.height() - 48))
+            self.resize(init_w, init_h)
+            self.move(
+                avail.x() + max(0, (avail.width() - init_w) // 2),
+                avail.y() + max(0, (avail.height() - init_h) // 2),
+            )
+        else:
+            self.resize(640, 660)
+        self.setMinimumSize(460, 460)
         self.setStyleSheet(_WIN_DARK_QSS)
 
         central = QWidget(self)
         central.setObjectName("CentralWidget")
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
 
         tabs = QTabWidget()
+        tabs.setUsesScrollButtons(False)
+        tabs.setElideMode(Qt.ElideNone)
+        tabs.tabBar().setExpanding(True)
         main_layout.addWidget(tabs)
 
         # Tab 1: Live Wallpaper
@@ -213,48 +276,54 @@ class ControlCenterWindow(QMainWindow):
         tab_wp.setObjectName("tab_wp")
         scroll_wp = QScrollArea()
         scroll_wp.setObjectName("scroll_wp")
+        scroll_wp.setFrameShape(QFrame.NoFrame)
+        scroll_wp.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_wp.setWidgetResizable(True)
         scroll_wp.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
         content_wp = QWidget()
         content_wp.setObjectName("content_wp")
         layout_wp = QVBoxLayout(content_wp)
-        layout_wp.setSpacing(12)
-        layout_wp.setContentsMargins(12, 12, 12, 12)
+        layout_wp.setSpacing(10)
+        layout_wp.setContentsMargins(8, 8, 10, 12)
         self._build_wallpaper_tab(layout_wp)
         scroll_wp.setWidget(content_wp)
         layout_tab_wp = QVBoxLayout(tab_wp)
         layout_tab_wp.setContentsMargins(0, 0, 0, 0)
         layout_tab_wp.addWidget(scroll_wp)
-        tabs.addTab(tab_wp, "🎬 Live Wallpaper")
+        tabs.addTab(tab_wp, "Live Wallpaper")
 
         # Tab 2: Clock & Canvas Studio
         tab_cv = QWidget()
         tab_cv.setObjectName("tab_cv")
         scroll_cv = QScrollArea()
         scroll_cv.setObjectName("scroll_cv")
+        scroll_cv.setFrameShape(QFrame.NoFrame)
+        scroll_cv.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll_cv.setWidgetResizable(True)
         scroll_cv.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
         content_cv = QWidget()
         content_cv.setObjectName("content_cv")
         layout_cv = QVBoxLayout(content_cv)
-        layout_cv.setSpacing(12)
-        layout_cv.setContentsMargins(12, 12, 12, 12)
+        layout_cv.setSpacing(10)
+        layout_cv.setContentsMargins(8, 8, 10, 12)
         self._build_canvas_tab(layout_cv)
         scroll_cv.setWidget(content_cv)
         layout_tab_cv = QVBoxLayout(tab_cv)
         layout_tab_cv.setContentsMargins(0, 0, 0, 0)
         layout_tab_cv.addWidget(scroll_cv)
-        tabs.addTab(tab_cv, "🕒 Clock && Canvas Studio")
+        tabs.addTab(tab_cv, "Clock && Canvas Studio")
         tabs.currentChanged.connect(lambda idx: log.info("UI Tab switched -> %r (index=%d)", tabs.tabText(idx), idx))
 
         self._building = False
         self._update_engine_status()
         self._register_global_hotkey(self._current_hotkey)
         log.info(
-            "ControlCenterWindow initialized (hotkey=%r, theme=%r, video=%r)",
+            "ControlCenterWindow initialized (hotkey=%r, theme=%r, video=%r, size=%dx%d)",
             self._current_hotkey,
             self.cfg.get("canvas.active_theme"),
             self.cfg.get("wallpaper.video_path"),
+            self.width(),
+            self.height(),
         )
 
     # -----------------------------------------------------------------------
@@ -338,9 +407,37 @@ class ControlCenterWindow(QMainWindow):
             log.info("ControlCenterWindow state changed -> minimized=%s", self.isMinimized())
         super().changeEvent(event)
 
+    def _schedule_cfg_save(self) -> None:
+        self._cfg_dirty = True
+        self._save_timer.start()
+
+    def _flush_cfg_save(self) -> None:
+        if self._save_timer.isActive():
+            self._save_timer.stop()
+        if self._cfg_dirty:
+            self.cfg.save()
+            self._cfg_dirty = False
+
+    def _make_field_label(self, text: str, width: int = 98) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setProperty("role", "field-label")
+        lbl.setFixedWidth(width)
+        return lbl
+
+    def _make_value_badge(self, text: str, width: int = 52) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setProperty("role", "value-badge")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setFixedWidth(width)
+        return lbl
+
     def closeEvent(self, event) -> None:
-        """Unregister hotkey when window closes."""
+        """Flush pending config saves and unregister hotkey when window closes."""
         log.info("ControlCenterWindow.closeEvent() -> closing Control Center")
+        try:
+            self._flush_cfg_save()
+        except Exception:
+            pass
         try:
             ctypes.windll.user32.UnregisterHotKey(int(self.winId()), self.HOTKEY_ID)
         except Exception:
@@ -365,18 +462,18 @@ class ControlCenterWindow(QMainWindow):
         h_status.addStretch()
         v_eng.addLayout(h_status)
 
-        # Engine buttons: 2-row layout with bold, high-contrast, crystal-clear buttons
         # Row 1: Primary Controls (Start, Stop, Restart)
         h_btns_row1 = QHBoxLayout()
         h_btns_row1.setSpacing(8)
 
         btn_start = QPushButton("▶  Start")
+        btn_start.setMinimumWidth(0)
         btn_start.setStyleSheet("""
             QPushButton {
                 background-color: #89b4fa;
                 color: #11111b;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 8px 10px;
                 font-weight: bold;
                 font-size: 13px;
                 border: none;
@@ -391,12 +488,13 @@ class ControlCenterWindow(QMainWindow):
         btn_start.clicked.connect(self._on_start)
 
         btn_stop = QPushButton("■  Stop")
+        btn_stop.setMinimumWidth(0)
         btn_stop.setStyleSheet("""
             QPushButton {
                 background-color: #f38ba8;
                 color: #11111b;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 8px 10px;
                 font-weight: bold;
                 font-size: 13px;
                 border: none;
@@ -410,13 +508,14 @@ class ControlCenterWindow(QMainWindow):
         """)
         btn_stop.clicked.connect(self._on_stop)
 
-        btn_restart = QPushButton("↺  Restart")
+        btn_restart = QPushButton("↻  Restart")
+        btn_restart.setMinimumWidth(0)
         btn_restart.setStyleSheet("""
             QPushButton {
                 background-color: #fab387;
                 color: #11111b;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 8px 10px;
                 font-weight: bold;
                 font-size: 13px;
                 border: none;
@@ -440,12 +539,13 @@ class ControlCenterWindow(QMainWindow):
         h_btns_row2.setSpacing(8)
 
         btn_pause = QPushButton("⏸  Pause / Resume")
+        btn_pause.setMinimumWidth(0)
         btn_pause.setStyleSheet("""
             QPushButton {
                 background-color: #313244;
                 color: #cdd6f4;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 8px 10px;
                 font-weight: bold;
                 font-size: 12px;
                 border: 1px solid #45475a;
@@ -460,13 +560,14 @@ class ControlCenterWindow(QMainWindow):
         """)
         btn_pause.clicked.connect(self._on_pause)
 
-        btn_kill = QPushButton("💀  Kill Wallpaper")
+        btn_kill = QPushButton("✕  Kill Wallpaper")
+        btn_kill.setMinimumWidth(0)
         btn_kill.setStyleSheet("""
             QPushButton {
                 background-color: #e53935;
                 color: #ffffff;
                 border-radius: 6px;
-                padding: 8px 16px;
+                padding: 8px 10px;
                 font-weight: bold;
                 font-size: 12px;
                 border: none;
@@ -486,10 +587,13 @@ class ControlCenterWindow(QMainWindow):
         v_eng.addLayout(h_btns_row2)
 
         h_file = QHBoxLayout()
-        h_file.addWidget(QLabel("Video:"))
+        h_file.setSpacing(8)
+        h_file.addWidget(self._make_field_label("Video File:"))
         cur_video = self.cfg.get("wallpaper.video_path") or ""
         video_display = Path(cur_video).name if cur_video else "None selected"
         self.lbl_file = QLabel(video_display)
+        self.lbl_file.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.lbl_file.setToolTip(str(cur_video))
         self.lbl_file.setStyleSheet("color: #a6adc8; font-style: italic;")
         btn_browse = QPushButton("Browse...")
         btn_browse.setStyleSheet("""
@@ -519,30 +623,30 @@ class ControlCenterWindow(QMainWindow):
 
         # Volume
         h_vol = QHBoxLayout()
+        h_vol.setSpacing(8)
         vol_val = int(self.cfg.get("wallpaper.volume") or 50)
-        self.lbl_vol_val = QLabel(f"{vol_val}%")
-        self.lbl_vol_val.setFixedWidth(45)
-        h_vol.addWidget(QLabel("Volume:"))
+        self.lbl_vol_val = self._make_value_badge(f"{vol_val}%")
+        h_vol.addWidget(self._make_field_label("Volume:"))
         sl_vol = QSlider(Qt.Horizontal)
         sl_vol.setRange(0, 100)
         sl_vol.setValue(vol_val)
         sl_vol.valueChanged.connect(self._on_volume_changed)
-        sl_vol.sliderReleased.connect(lambda: log.info("UI Slider released: volume=%d%%", sl_vol.value()))
+        sl_vol.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: volume=%d%%", sl_vol.value())))
         h_vol.addWidget(sl_vol, 1)
         h_vol.addWidget(self.lbl_vol_val)
         v_pb.addLayout(h_vol)
 
         # Speed
         h_spd = QHBoxLayout()
+        h_spd.setSpacing(8)
         spd_val = float(self.cfg.get("wallpaper.playback_speed") or 1.0)
-        self.lbl_spd_val = QLabel(f"{spd_val:.2f}x")
-        self.lbl_spd_val.setFixedWidth(45)
-        h_spd.addWidget(QLabel("Speed:"))
+        self.lbl_spd_val = self._make_value_badge(f"{spd_val:.2f}x")
+        h_spd.addWidget(self._make_field_label("Speed:"))
         sl_spd = QSlider(Qt.Horizontal)
         sl_spd.setRange(25, 200)
         sl_spd.setValue(int(spd_val * 100))
         sl_spd.valueChanged.connect(self._on_speed_changed)
-        sl_spd.sliderReleased.connect(lambda: log.info("UI Slider released: speed=%.2fx", sl_spd.value() / 100.0))
+        sl_spd.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: speed=%.2fx", sl_spd.value() / 100.0)))
         h_spd.addWidget(sl_spd, 1)
         h_spd.addWidget(self.lbl_spd_val)
         v_pb.addLayout(h_spd)
@@ -561,26 +665,34 @@ class ControlCenterWindow(QMainWindow):
         v_hk.setSpacing(8)
 
         lbl_hk_desc = QLabel("System-wide hotkey to toggle or kill live wallpaper from any application or game.")
+        lbl_hk_desc.setWordWrap(True)
+        lbl_hk_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         lbl_hk_desc.setStyleSheet("color: #a6adc8; font-size: 11px;")
         v_hk.addWidget(lbl_hk_desc)
 
-        h_hk = QHBoxLayout()
-        h_hk.addWidget(QLabel("Toggle Hotkey:"))
+        h_hk_sel = QHBoxLayout()
+        h_hk_sel.setSpacing(8)
+        h_hk_sel.addWidget(self._make_field_label("Toggle Hotkey:"))
         self.cb_hotkey = QComboBox()
+        self.cb_hotkey.setMinimumWidth(0)
         for k in HOTKEY_PRESETS.keys():
             self.cb_hotkey.addItem(k)
         cur_hk = self.cfg.get("wallpaper.shortcut") or "Win + W (Default)"
         if cur_hk in HOTKEY_PRESETS:
             self.cb_hotkey.setCurrentText(cur_hk)
-        h_hk.addWidget(self.cb_hotkey, 1)
+        h_hk_sel.addWidget(self.cb_hotkey, 1)
+        v_hk.addLayout(h_hk_sel)
 
+        h_hk_btns = QHBoxLayout()
+        h_hk_btns.setSpacing(8)
         btn_bind_hk = QPushButton("Bind Hotkey")
+        btn_bind_hk.setMinimumWidth(0)
         btn_bind_hk.setStyleSheet("""
             QPushButton {
                 background-color: #89b4fa;
                 color: #11111b;
                 border-radius: 6px;
-                padding: 6px 14px;
+                padding: 7px 12px;
                 font-weight: bold;
                 border: none;
             }
@@ -589,13 +701,14 @@ class ControlCenterWindow(QMainWindow):
             }
         """)
         btn_bind_hk.clicked.connect(lambda: self._register_global_hotkey(self.cb_hotkey.currentText()))
-        btn_remove_hk = QPushButton("Disable")
+        btn_remove_hk = QPushButton("Disable Hotkey")
+        btn_remove_hk.setMinimumWidth(0)
         btn_remove_hk.setStyleSheet("""
             QPushButton {
                 background-color: #313244;
                 color: #cdd6f4;
                 border-radius: 6px;
-                padding: 6px 14px;
+                padding: 7px 12px;
                 font-weight: bold;
                 border: 1px solid #45475a;
             }
@@ -604,11 +717,13 @@ class ControlCenterWindow(QMainWindow):
             }
         """)
         btn_remove_hk.clicked.connect(lambda: (self.cb_hotkey.setCurrentText("Disabled"), self._register_global_hotkey("Disabled")))
-        h_hk.addWidget(btn_bind_hk)
-        h_hk.addWidget(btn_remove_hk)
-        v_hk.addLayout(h_hk)
+        h_hk_btns.addWidget(btn_bind_hk, 1)
+        h_hk_btns.addWidget(btn_remove_hk, 1)
+        v_hk.addLayout(h_hk_btns)
 
         self.lbl_hk_status = QLabel("● Initializing global hotkey...")
+        self.lbl_hk_status.setWordWrap(True)
+        self.lbl_hk_status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.lbl_hk_status.setStyleSheet("color: #a6adc8; font-size: 11px;")
         v_hk.addWidget(self.lbl_hk_status)
 
@@ -621,8 +736,10 @@ class ControlCenterWindow(QMainWindow):
 
         # Fit Mode
         h_fit = QHBoxLayout()
-        h_fit.addWidget(QLabel("Screen Fit:"))
+        h_fit.setSpacing(8)
+        h_fit.addWidget(self._make_field_label("Screen Fit:"))
         cb_fit = QComboBox()
+        cb_fit.setMinimumWidth(0)
         cb_fit.addItems(["Fill (Zoom / Crop)", "Fit (Letterbox)", "Stretch"])
         fit_map = {"fill": 0, "fit": 1, "stretch": 2}
         cb_fit.setCurrentIndex(fit_map.get(self.cfg.get("wallpaper.fit_mode"), 0))
@@ -632,8 +749,10 @@ class ControlCenterWindow(QMainWindow):
 
         # Auto-Pause
         h_ap = QHBoxLayout()
-        h_ap.addWidget(QLabel("Auto-Pause:"))
+        h_ap.setSpacing(8)
+        h_ap.addWidget(self._make_field_label("Auto-Pause:"))
         cb_ap = QComboBox()
+        cb_ap.setMinimumWidth(0)
         cb_ap.addItems(["Focus (Any App)", "Maximized Only", "Off"])
         ap_map = {"focus": 0, "maximized": 1, "off": 2}
         cb_ap.setCurrentIndex(ap_map.get(self.cfg.get("wallpaper.autopause"), 0))
@@ -643,8 +762,10 @@ class ControlCenterWindow(QMainWindow):
 
         # FPS Limiter
         h_fps = QHBoxLayout()
-        h_fps.addWidget(QLabel("FPS Limiter:"))
+        h_fps.setSpacing(8)
+        h_fps.addWidget(self._make_field_label("FPS Limiter:"))
         cb_fps = QComboBox()
+        cb_fps.setMinimumWidth(0)
         cb_fps.addItems(["Native (Uncapped)", "30 FPS", "24 FPS"])
         fps_map = {"native": 0, "30": 1, "24": 2}
         cb_fps.setCurrentIndex(fps_map.get(self.cfg.get("wallpaper.fps_limit"), 0))
@@ -670,8 +791,10 @@ class ControlCenterWindow(QMainWindow):
         grp_th = QGroupBox("Visual Theme")
         v_th = QVBoxLayout(grp_th)
         h_th = QHBoxLayout()
-        h_th.addWidget(QLabel("Theme:"))
+        h_th.setSpacing(8)
+        h_th.addWidget(self._make_field_label("Theme:"))
         self.cb_theme = QComboBox()
+        self.cb_theme.setMinimumWidth(0)
         theme_names = self.ctrl.registry.names()
         self.cb_theme.addItems(theme_names)
         cur_th = self.cfg.get("canvas.active_theme") or "Mond Minimal"
@@ -706,21 +829,18 @@ class ControlCenterWindow(QMainWindow):
         # 3. Decoupled RGB Colors with Live Swatches
         grp_col = QGroupBox("Decoupled Component Colors")
         v_col = QVBoxLayout(grp_col)
-        v_col.setSpacing(10)
+        v_col.setSpacing(8)
 
-        # Clock Color Row
         self.btn_col_clk = QPushButton()
         self._update_color_button(self.btn_col_clk, self.cfg.get("canvas.clock_color") or "#FFFFFF", "Clock Color")
         self.btn_col_clk.clicked.connect(lambda: self._pick_color("canvas.clock_color", self.btn_col_clk, "Clock Color"))
         v_col.addWidget(self.btn_col_clk)
 
-        # Date Color Row
         self.btn_col_dt = QPushButton()
         self._update_color_button(self.btn_col_dt, self.cfg.get("canvas.date_color") or "#D0D0D0", "Date Color")
         self.btn_col_dt.clicked.connect(lambda: self._pick_color("canvas.date_color", self.btn_col_dt, "Date Color"))
         v_col.addWidget(self.btn_col_dt)
 
-        # Visualizer Color Row
         self.btn_col_vis = QPushButton()
         self._update_color_button(self.btn_col_vis, self.cfg.get("canvas.visualizer_color") or "#FFFFFF", "Visualizer Color")
         self.btn_col_vis.clicked.connect(lambda: self._pick_color("canvas.visualizer_color", self.btn_col_vis, "Visualizer Color"))
@@ -735,45 +855,45 @@ class ControlCenterWindow(QMainWindow):
 
         # Background Opacity
         h_op = QHBoxLayout()
-        h_op.addWidget(QLabel("BG Opacity:"))
+        h_op.setSpacing(8)
+        h_op.addWidget(self._make_field_label("BG Opacity:"))
         op_val = float(self.cfg.get("canvas.background_opacity") or 0.0)
-        self.lbl_op_val = QLabel(f"{int(op_val * 100)}%")
-        self.lbl_op_val.setFixedWidth(45)
+        self.lbl_op_val = self._make_value_badge(f"{int(op_val * 100)}%")
         sl_op = QSlider(Qt.Horizontal)
         sl_op.setRange(0, 100)
         sl_op.setValue(int(op_val * 100))
         sl_op.valueChanged.connect(self._on_opacity_changed)
-        sl_op.sliderReleased.connect(lambda: log.info("UI Slider released: background_opacity=%d%%", sl_op.value()))
+        sl_op.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: background_opacity=%d%%", sl_op.value())))
         h_op.addWidget(sl_op, 1)
         h_op.addWidget(self.lbl_op_val)
         v_sc.addLayout(h_op)
 
         # Master Scale
         h_msc = QHBoxLayout()
-        h_msc.addWidget(QLabel("Master Scale:"))
+        h_msc.setSpacing(8)
+        h_msc.addWidget(self._make_field_label("Master Scale:"))
         msc_val = float(self.cfg.get("canvas.scale") or 1.0)
-        self.lbl_msc_val = QLabel(f"{msc_val:.2f}x")
-        self.lbl_msc_val.setFixedWidth(45)
+        self.lbl_msc_val = self._make_value_badge(f"{msc_val:.2f}x")
         sl_msc = QSlider(Qt.Horizontal)
         sl_msc.setRange(50, 250)
         sl_msc.setValue(int(msc_val * 100))
         sl_msc.valueChanged.connect(self._on_scale_changed)
-        sl_msc.sliderReleased.connect(lambda: log.info("UI Slider released: master_scale=%.2fx", sl_msc.value() / 100.0))
+        sl_msc.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: master_scale=%.2fx", sl_msc.value() / 100.0)))
         h_msc.addWidget(sl_msc, 1)
         h_msc.addWidget(self.lbl_msc_val)
         v_sc.addLayout(h_msc)
 
         # Visualizer Intensity
         h_int = QHBoxLayout()
-        h_int.addWidget(QLabel("Vis Intensity:"))
+        h_int.setSpacing(8)
+        h_int.addWidget(self._make_field_label("Vis Intensity:"))
         int_val = float(self.cfg.get("canvas.visualizer_intensity") or 0.65)
-        self.lbl_int_val = QLabel(f"{int(int_val * 100)}%")
-        self.lbl_int_val.setFixedWidth(45)
+        self.lbl_int_val = self._make_value_badge(f"{int(int_val * 100)}%")
         sl_int = QSlider(Qt.Horizontal)
         sl_int.setRange(10, 200)
         sl_int.setValue(int(int_val * 100))
         sl_int.valueChanged.connect(self._on_intensity_changed)
-        sl_int.sliderReleased.connect(lambda: log.info("UI Slider released: visualizer_intensity=%d%%", sl_int.value()))
+        sl_int.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: visualizer_intensity=%d%%", sl_int.value())))
         h_int.addWidget(sl_int, 1)
         h_int.addWidget(self.lbl_int_val)
         v_sc.addLayout(h_int)
@@ -788,15 +908,15 @@ class ControlCenterWindow(QMainWindow):
         self.box_clk_sc = QWidget()
         h_csc = QHBoxLayout(self.box_clk_sc)
         h_csc.setContentsMargins(0, 0, 0, 0)
-        h_csc.addWidget(QLabel("  Clock Scale:"))
+        h_csc.setSpacing(8)
+        h_csc.addWidget(self._make_field_label("  Clock Scale:"))
         clk_sc = float(self.cfg.get("canvas.clock_scale") or 1.0)
-        self.lbl_clk_sc = QLabel(f"{clk_sc:.2f}x")
-        self.lbl_clk_sc.setFixedWidth(45)
+        self.lbl_clk_sc = self._make_value_badge(f"{clk_sc:.2f}x")
         self.sl_clk_sc = QSlider(Qt.Horizontal)
         self.sl_clk_sc.setRange(40, 300)
         self.sl_clk_sc.setValue(int(clk_sc * 100))
         self.sl_clk_sc.valueChanged.connect(lambda v: self._on_elem_scale_changed("clock", v, self.lbl_clk_sc))
-        self.sl_clk_sc.sliderReleased.connect(lambda: log.info("UI Slider released: clock_scale=%.2fx", self.sl_clk_sc.value() / 100.0))
+        self.sl_clk_sc.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: clock_scale=%.2fx", self.sl_clk_sc.value() / 100.0)))
         h_csc.addWidget(self.sl_clk_sc, 1)
         h_csc.addWidget(self.lbl_clk_sc)
         v_sc.addWidget(self.box_clk_sc)
@@ -805,15 +925,15 @@ class ControlCenterWindow(QMainWindow):
         self.box_dt_sc = QWidget()
         h_dsc = QHBoxLayout(self.box_dt_sc)
         h_dsc.setContentsMargins(0, 0, 0, 0)
-        h_dsc.addWidget(QLabel("  Date Scale:"))
+        h_dsc.setSpacing(8)
+        h_dsc.addWidget(self._make_field_label("  Date Scale:"))
         dt_sc = float(self.cfg.get("canvas.date_scale") or 1.0)
-        self.lbl_dt_sc = QLabel(f"{dt_sc:.2f}x")
-        self.lbl_dt_sc.setFixedWidth(45)
+        self.lbl_dt_sc = self._make_value_badge(f"{dt_sc:.2f}x")
         self.sl_dt_sc = QSlider(Qt.Horizontal)
         self.sl_dt_sc.setRange(40, 300)
         self.sl_dt_sc.setValue(int(dt_sc * 100))
         self.sl_dt_sc.valueChanged.connect(lambda v: self._on_elem_scale_changed("date", v, self.lbl_dt_sc))
-        self.sl_dt_sc.sliderReleased.connect(lambda: log.info("UI Slider released: date_scale=%.2fx", self.sl_dt_sc.value() / 100.0))
+        self.sl_dt_sc.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: date_scale=%.2fx", self.sl_dt_sc.value() / 100.0)))
         h_dsc.addWidget(self.sl_dt_sc, 1)
         h_dsc.addWidget(self.lbl_dt_sc)
         v_sc.addWidget(self.box_dt_sc)
@@ -822,22 +942,20 @@ class ControlCenterWindow(QMainWindow):
         self.box_vis_sc = QWidget()
         h_vsc = QHBoxLayout(self.box_vis_sc)
         h_vsc.setContentsMargins(0, 0, 0, 0)
-        h_vsc.addWidget(QLabel("  Visualizer Scale:"))
+        h_vsc.setSpacing(8)
+        h_vsc.addWidget(self._make_field_label("  Vis Scale:"))
         vis_sc = float(self.cfg.get("canvas.visualizer_scale") or 1.0)
-        self.lbl_vis_sc = QLabel(f"{vis_sc:.2f}x")
-        self.lbl_vis_sc.setFixedWidth(45)
+        self.lbl_vis_sc = self._make_value_badge(f"{vis_sc:.2f}x")
         self.sl_vis_sc = QSlider(Qt.Horizontal)
         self.sl_vis_sc.setRange(40, 300)
         self.sl_vis_sc.setValue(int(vis_sc * 100))
         self.sl_vis_sc.valueChanged.connect(lambda v: self._on_elem_scale_changed("visualizer", v, self.lbl_vis_sc))
-        self.sl_vis_sc.sliderReleased.connect(lambda: log.info("UI Slider released: visualizer_scale=%.2fx", self.sl_vis_sc.value() / 100.0))
+        self.sl_vis_sc.sliderReleased.connect(lambda: (self._flush_cfg_save(), log.info("UI Slider released: visualizer_scale=%.2fx", self.sl_vis_sc.value() / 100.0)))
         h_vsc.addWidget(self.sl_vis_sc, 1)
         h_vsc.addWidget(self.lbl_vis_sc)
         v_sc.addWidget(self.box_vis_sc)
 
-        # Apply visibility of independent sliders based on state
         self._update_independent_visibility(self.chk_ind.isChecked())
-
         layout.addWidget(grp_sc)
 
         # 5. Interactive Drag-and-Drop Positioning
@@ -846,17 +964,21 @@ class ControlCenterWindow(QMainWindow):
         v_drag.setSpacing(10)
 
         lbl_drag_desc = QLabel("Unlock the canvas to drag Clock, Date, and Visualizer freely on the desktop. Lock to save positions.")
+        lbl_drag_desc.setWordWrap(True)
+        lbl_drag_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         lbl_drag_desc.setStyleSheet("color: #a6adc8; font-size: 11px;")
         v_drag.addWidget(lbl_drag_desc)
 
         h_drag_btns = QHBoxLayout()
-        self.btn_drag = QPushButton("🔓  Unlock Drag Mode")
+        h_drag_btns.setSpacing(8)
+        self.btn_drag = QPushButton("Unlock Drag Mode")
+        self.btn_drag.setMinimumWidth(0)
         self.btn_drag.setStyleSheet("""
             QPushButton {
                 background-color: #00acc1;
                 color: #ffffff;
                 font-weight: bold;
-                padding: 9px 18px;
+                padding: 9px 12px;
                 border-radius: 6px;
                 font-size: 13px;
                 border: 1px solid #26c6da;
@@ -867,13 +989,14 @@ class ControlCenterWindow(QMainWindow):
         """)
         self.btn_drag.clicked.connect(self._on_toggle_drag)
 
-        btn_reset = QPushButton("↺  Reset Center Layout")
+        btn_reset = QPushButton("↻  Reset Center Layout")
+        btn_reset.setMinimumWidth(0)
         btn_reset.setStyleSheet("""
             QPushButton {
                 background-color: #313244;
                 color: #cdd6f4;
                 font-weight: bold;
-                padding: 9px 18px;
+                padding: 9px 12px;
                 border-radius: 6px;
                 font-size: 12px;
                 border: 1px solid #45475a;
@@ -884,8 +1007,8 @@ class ControlCenterWindow(QMainWindow):
         """)
         btn_reset.clicked.connect(self._on_reset_layout)
 
-        h_drag_btns.addWidget(self.btn_drag)
-        h_drag_btns.addWidget(btn_reset)
+        h_drag_btns.addWidget(self.btn_drag, 1)
+        h_drag_btns.addWidget(btn_reset, 1)
         v_drag.addLayout(h_drag_btns)
 
         layout.addWidget(grp_drag)
@@ -953,13 +1076,14 @@ class ControlCenterWindow(QMainWindow):
             self.cfg.set("wallpaper.video_path", path)
             self.cfg.save()
             self.lbl_file.setText(Path(path).name)
+            self.lbl_file.setToolTip(path)
         else:
             log.info("UI Browse Video cancelled")
 
     def _on_volume_changed(self, val: int) -> None:
         self.lbl_vol_val.setText(f"{val}%")
         self.cfg.set("wallpaper.volume", val)
-        self.cfg.save()
+        self._schedule_cfg_save()
         self.ctrl.engine.set_volume(val)
         allowed, _ = get_rate_limiter().check("ui:slider:vol", interval=0.5)
         if allowed:
@@ -969,7 +1093,7 @@ class ControlCenterWindow(QMainWindow):
         speed = val / 100.0
         self.lbl_spd_val.setText(f"{speed:.2f}x")
         self.cfg.set("wallpaper.playback_speed", speed)
-        self.cfg.save()
+        self._schedule_cfg_save()
         self.ctrl.engine.set_speed(speed)
         allowed, _ = get_rate_limiter().check("ui:slider:spd", interval=0.5)
         if allowed:
@@ -1024,31 +1148,34 @@ class ControlCenterWindow(QMainWindow):
         log.info("UI Change: canvas.active_theme=%r", name)
         self.ctrl.apply_theme(name)
 
-    def _set_canvas_cfg(self, key: str, val: Any, quiet: bool = False) -> None:
+    def _set_canvas_cfg(self, key: str, val: Any, quiet: bool = False, defer_save: bool = False) -> None:
         if not quiet:
             log.info("UI Change: %s=%r", key, val)
         self.cfg.set(key, val)
-        self.cfg.save()
+        if defer_save:
+            self._schedule_cfg_save()
+        else:
+            self.cfg.save()
         self.ctrl.reload_canvas()
 
     def _on_opacity_changed(self, val: int) -> None:
         opacity = val / 100.0
         self.lbl_op_val.setText(f"{val}%")
         allowed, _ = get_rate_limiter().check("ui:slider:op", interval=0.5)
-        self._set_canvas_cfg("canvas.background_opacity", opacity, quiet=not allowed)
+        self._set_canvas_cfg("canvas.background_opacity", opacity, quiet=not allowed, defer_save=True)
 
     def _on_scale_changed(self, val: int) -> None:
         scale = val / 100.0
         self.lbl_msc_val.setText(f"{scale:.2f}x")
         allowed, _ = get_rate_limiter().check("ui:slider:scale", interval=0.5)
-        self._set_canvas_cfg("canvas.scale", scale, quiet=not allowed)
+        self._set_canvas_cfg("canvas.scale", scale, quiet=not allowed, defer_save=True)
 
     def _on_intensity_changed(self, val: int) -> None:
         intensity = val / 100.0
         self.lbl_int_val.setText(f"{val}%")
         self.ctrl.audio.set_intensity(intensity)
         allowed, _ = get_rate_limiter().check("ui:slider:intensity", interval=0.5)
-        self._set_canvas_cfg("canvas.visualizer_intensity", intensity, quiet=not allowed)
+        self._set_canvas_cfg("canvas.visualizer_intensity", intensity, quiet=not allowed, defer_save=True)
 
     def _on_independent_toggled(self, checked: bool) -> None:
         self._update_independent_visibility(checked)
@@ -1063,17 +1190,17 @@ class ControlCenterWindow(QMainWindow):
         scale = val / 100.0
         label.setText(f"{scale:.2f}x")
         allowed, _ = get_rate_limiter().check(f"ui:slider:{elem}_scale", interval=0.5)
-        self._set_canvas_cfg(f"canvas.{elem}_scale", scale, quiet=not allowed)
+        self._set_canvas_cfg(f"canvas.{elem}_scale", scale, quiet=not allowed, defer_save=True)
 
     def _update_color_button(self, btn: QPushButton, hex_col: str, title: str) -> None:
-        btn.setText(f"  {title}:  {hex_col}  ")
+        btn.setText(f"  {title}:  {hex_col}")
         btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: #252839;
                 color: #cdd6f4;
                 border: 2px solid {hex_col};
                 border-radius: 6px;
-                padding: 6px 14px;
+                padding: 7px 12px;
                 text-align: left;
                 font-weight: bold;
             }}
@@ -1098,13 +1225,13 @@ class ControlCenterWindow(QMainWindow):
         editing = self.ctrl.toggle_canvas_edit_mode()
         log.info("UI Action: Toggle Drag Mode -> editing=%s", editing)
         if editing:
-            self.btn_drag.setText("🔒  Lock Positions (Save)")
+            self.btn_drag.setText("Lock Positions (Save)")
             self.btn_drag.setObjectName("btn-lock")
-            self.btn_drag.setStyleSheet("background-color: #e53935; color: white; font-weight: bold; padding: 9px 18px; border-radius: 6px;")
+            self.btn_drag.setStyleSheet("background-color: #e53935; color: white; font-weight: bold; padding: 9px 12px; border-radius: 6px;")
         else:
-            self.btn_drag.setText("🔓  Unlock Drag Mode")
+            self.btn_drag.setText("Unlock Drag Mode")
             self.btn_drag.setObjectName("btn-unlock")
-            self.btn_drag.setStyleSheet("background-color: #00acc1; color: white; font-weight: bold; padding: 9px 18px; border-radius: 6px;")
+            self.btn_drag.setStyleSheet("background-color: #00acc1; color: white; font-weight: bold; padding: 9px 12px; border-radius: 6px; border: 1px solid #26c6da;")
 
     def _on_reset_layout(self) -> None:
         log.info("UI Action: Click Reset Center Layout")

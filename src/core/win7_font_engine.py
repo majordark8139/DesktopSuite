@@ -97,6 +97,7 @@ class BundledFontRegistry:
     def __init__(self) -> None:
         self.family_map: dict[str, str] = dict(self.KNOWN_ALIASES)
         self.available_weights: dict[str, list[int]] = {}
+        self._qfont_cache: dict[tuple[str, int, int, int], tuple[Any, Any]] = {}
         self._loaded = False
 
     def load_fonts_from_directory(self, fonts_dir: str | Path) -> int:
@@ -114,9 +115,15 @@ class BundledFontRegistry:
 
         db = QFontDatabase()
         count = 0
+        seen_signatures: set[tuple[str, int]] = set()
 
         for ext in ("*.ttf", "*.otf"):
             for font_file in sorted(fonts_path.glob(ext)):
+                stem_sig = (font_file.stem.lower().replace(" ", "").replace("-", ""), font_file.stat().st_size)
+                if stem_sig in seen_signatures:
+                    continue
+                seen_signatures.add(stem_sig)
+
                 full_path = str(font_file.resolve())
                 font_id = QFontDatabase.addApplicationFont(full_path)
                 if font_id == -1:
@@ -155,18 +162,25 @@ class BundledFontRegistry:
                 count += 1
 
         self._loaded = True
+        self._qfont_cache.clear()
         log.info("BundledFontRegistry loaded %d fonts (%d families mapped)", count, len(self.family_map))
         return count
 
-    def resolve_qfont(
+    def resolve_qfont_with_metrics(
         self,
         requested_family: str,
         cairo_slant: int,
         cairo_weight: int,
         pixel_size: float,
-    ) -> Any:
-        """Resolve a requested font family, slant, and weight to a configured QFont."""
-        from PyQt5.QtGui import QFont
+    ) -> tuple[Any, Any]:
+        """Resolve and cache a (QFont, QFontMetricsF) pair for a requested font configuration."""
+        px = max(1, int(round(pixel_size)))
+        cache_key = (requested_family, int(cairo_slant), int(cairo_weight), px)
+        cached = self._qfont_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        from PyQt5.QtGui import QFont, QFontMetricsF
 
         raw_key = requested_family.strip().lower()
         no_space_key = raw_key.replace(" ", "").replace("-", "")
@@ -178,7 +192,7 @@ class BundledFontRegistry:
         )
 
         font = QFont(actual_family)
-        font.setPixelSize(max(1, int(round(pixel_size))))
+        font.setPixelSize(px)
 
         # Map Cairo slant -> QFont style
         if cairo_slant == cairo.FontSlant.ITALIC:
@@ -200,7 +214,21 @@ class BundledFontRegistry:
             font.setWeight(target_qt_weight)
 
         font.setStyleStrategy(QFont.PreferAntialias | QFont.PreferQuality)
-        return font
+        pair = (font, QFontMetricsF(font))
+        self._qfont_cache[cache_key] = pair
+        return pair
+
+    def resolve_qfont(
+        self,
+        requested_family: str,
+        cairo_slant: int,
+        cairo_weight: int,
+        pixel_size: float,
+    ) -> Any:
+        """Resolve a requested font family, slant, and weight to a configured QFont."""
+        return self.resolve_qfont_with_metrics(
+            requested_family, cairo_slant, cairo_weight, pixel_size
+        )[0]
 
 
 class SharedCairoQtSurface:
@@ -274,6 +302,63 @@ class SharedCairoQtSurface:
                 self._buf_addr, cur_addr,
             )
             self._bind_cairo_surface()
+        if self.cairo_surface is not None:
+            self.cairo_surface.mark_dirty()
+
+    def clear_rect_transparent(self, x: int, y: int, w: int, h: int) -> None:
+        """Clear a clamped rectangular region of the shared buffer to 0x00000000 in place."""
+        if self._disposed or self.qimage is None:
+            return
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(self.width, x + w)
+        y1 = min(self.height, y + h)
+        cw = x1 - x0
+        ch = y1 - y0
+        if cw <= 0 or ch <= 0:
+            return
+        if x0 == 0 and y0 == 0 and cw == self.width and ch == self.height:
+            self.clear_transparent()
+            return
+        if self.cairo_surface is not None:
+            self.cairo_surface.flush()
+        row_bytes = cw * 4
+        if x0 == 0 and cw == self.width:
+            ctypes.memset(self._buf_addr + y0 * self.stride, 0, ch * self.stride)
+        else:
+            offset_x = x0 * 4
+            for row in range(y0, y1):
+                ctypes.memset(self._buf_addr + row * self.stride + offset_x, 0, row_bytes)
+        if self.cairo_surface is not None:
+            self.cairo_surface.mark_dirty()
+
+    def blit_from_surface_rect(
+        self, src: SharedCairoQtSurface, x: int, y: int, w: int, h: int
+    ) -> None:
+        """
+        Copy a clamped rectangular slice from `src.qimage` into this surface via
+        CompositionMode_Source without triggering QImage detach.
+        """
+        if self._disposed or self.qimage is None or src.qimage is None:
+            return
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(self.width, src.width, x + w)
+        y1 = min(self.height, src.height, y + h)
+        cw = x1 - x0
+        ch = y1 - y0
+        if cw <= 0 or ch <= 0:
+            return
+        src_img = src.get_blit_qimage()
+        if self.cairo_surface is not None:
+            self.cairo_surface.flush()
+        from PyQt5.QtGui import QPainter
+        painter = QPainter(self.qimage)
+        try:
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
+            painter.drawImage(x0, y0, src_img, x0, y0, cw, ch)
+        finally:
+            painter.end()
         if self.cairo_surface is not None:
             self.cairo_surface.mark_dirty()
 
@@ -373,6 +458,11 @@ class Win7CairoContext:
             self._font_family, self._font_slant, self._font_weight, self._font_size
         )
 
+    def _current_qfont_and_metrics(self) -> tuple[Any, Any]:
+        return self._registry.resolve_qfont_with_metrics(
+            self._font_family, self._font_slant, self._font_weight, self._font_size
+        )
+
     def text_extents(self, text: str) -> Any:
         if not text:
             try:
@@ -380,9 +470,7 @@ class Win7CairoContext:
             except Exception:
                 return CairoTextExtents(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-        from PyQt5.QtGui import QFontMetricsF
-        qfont = self._current_qfont()
-        fm = QFontMetricsF(qfont)
+        _qfont, fm = self._current_qfont_and_metrics()
         rect = fm.tightBoundingRect(text)
         x_adv = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
 
@@ -422,9 +510,9 @@ class Win7CairoContext:
         self._surface.flush()
 
         from PyQt5.QtCore import QPointF
-        from PyQt5.QtGui import QPainter, QFontMetricsF, QTransform, QColor
+        from PyQt5.QtGui import QPainter, QTransform, QColor
 
-        qfont = self._current_qfont()
+        qfont, fm = self._current_qfont_and_metrics()
         painter = QPainter(self._qimage)
         try:
             painter.setRenderHints(
@@ -446,7 +534,6 @@ class Win7CairoContext:
             painter.setFont(qfont)
             painter.drawText(QPointF(cx, cy), text)
 
-            fm = QFontMetricsF(qfont)
             x_adv = fm.horizontalAdvance(text) if hasattr(fm, "horizontalAdvance") else fm.width(text)
         finally:
             painter.end()

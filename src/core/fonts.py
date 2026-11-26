@@ -62,75 +62,43 @@ def register_bundled_fonts() -> bool:
 
     success = False
 
-    # 1. Windows GDI session-wide and private font registration
-    if sys.platform == "win32":
+    # 1. Windows GDI font registration is NOT needed when Qt FreeType
+    # (BundledFontRegistry / QFontDatabase) handles canvas rendering, and
+    # broadcasting HWND_BROADCAST WM_FONTCHANGE stalls startup on Windows 7.
+    # Only touch Fontconfig on non-Windows platforms.
+    if sys.platform != "win32":
+        # Fontconfig registration (Linux)
         try:
-            gdi32 = ctypes.windll.gdi32
-            gdi32.AddFontResourceW.argtypes = [ctypes.c_wchar_p]
-            gdi32.AddFontResourceW.restype = ctypes.c_int
-
-            gdi32.AddFontResourceExW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p]
-            gdi32.AddFontResourceExW.restype = ctypes.c_int
-
-            count = 0
-            for ext_pattern in ("*.ttf", "*.otf"):
-                for font_file in font_dir.glob(ext_pattern):
-                    p_str = str(font_file.resolve())
-                    r1 = gdi32.AddFontResourceW(p_str)
-                    if r1 > 0:
-                        count += 1
-                        _REGISTERED_PATHS.append(p_str)
-
-            if count > 0:
-                log.info("Registered %d bundled fonts with Windows GDI from %s", count, font_dir)
+            from ctypes import util as ctypes_util
+            fc_lib = ctypes_util.find_library("fontconfig")
+            if fc_lib:
+                fc = ctypes.CDLL(fc_lib)
+                fc.FcConfigAppFontAddDir(None, str(font_dir).encode("utf-8"))
+                count = 0
+                for ext_pattern in ("*.ttf", "*.otf"):
+                    for font_file in font_dir.glob(ext_pattern):
+                        res = fc.FcConfigAppFontAddFile(None, str(font_file).encode("utf-8"))
+                        if res:
+                            count += 1
+                _FONTS_REGISTERED = True
+                log.info("Registered %d bundled fonts with Fontconfig from %s", count, font_dir)
                 success = True
-                try:
-                    user32 = ctypes.windll.user32
-                    user32.SendMessageTimeoutW.argtypes = [
-                        wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM,
-                        ctypes.c_uint, ctypes.c_uint, ctypes.POINTER(ctypes.c_ulong)
-                    ]
-                    user32.SendMessageTimeoutW.restype = wintypes.LPARAM
-                    res_val = ctypes.c_ulong(0)
-                    user32.SendMessageTimeoutW(0xFFFF, 0x001D, 0, 0, 0x0002, 1000, ctypes.byref(res_val))
-                except Exception as b_exc:
-                    log.debug("WM_FONTCHANGE broadcast error: %s", b_exc)
-
-            atexit.register(_cleanup_fonts)
         except Exception as exc:
-            log.warning("Failed to register bundled fonts with Windows GDI: %s", exc)
-
-    # 2. Register with Qt QFontDatabase if QApplication instance exists
-    try:
-        from PyQt5.QtGui import QGuiApplication
-        if QGuiApplication.instance() is not None:
-            from src.core.win7_font_engine import get_font_registry
-            reg = get_font_registry()
-            qt_count = reg.load_fonts_from_directory(font_dir)
-            if qt_count > 0:
-                log.info("Registered %d bundled fonts with Qt QFontDatabase", qt_count)
-                success = True
-    except Exception as q_exc:
-        log.debug("Qt font registration skipped: %s", q_exc)
-
-    # 3. Fontconfig registration (Linux or Windows with fontconfig available)
-    try:
-        from ctypes import util as ctypes_util
-        fc_lib = ctypes_util.find_library("fontconfig")
-        if fc_lib:
-            fc = ctypes.CDLL(fc_lib)
-            fc.FcConfigAppFontAddDir(None, str(font_dir).encode("utf-8"))
-            count = 0
-            for ext_pattern in ("*.ttf", "*.otf"):
-                for font_file in font_dir.glob(ext_pattern):
-                    res = fc.FcConfigAppFontAddFile(None, str(font_file).encode("utf-8"))
-                    if res:
-                        count += 1
-            _FONTS_REGISTERED = True
-            log.info("Registered %d bundled fonts with Fontconfig from %s", count, font_dir)
-            success = True
-    except Exception as exc:
-        log.debug("Fontconfig registration skipped or failed: %s", exc)
+            log.debug("Fontconfig registration skipped or failed: %s", exc)
+    else:
+        # Qt QFontDatabase registration is performed by BundledFontRegistry after QApplication init
+        try:
+            from PyQt5.QtGui import QGuiApplication
+            if QGuiApplication.instance() is not None:
+                from src.core.win7_font_engine import get_font_registry
+                reg = get_font_registry()
+                if not reg._loaded:
+                    qt_count = reg.load_fonts_from_directory(font_dir)
+                    if qt_count > 0:
+                        log.info("Registered %d bundled fonts with Qt QFontDatabase", qt_count)
+                        success = True
+        except Exception as q_exc:
+            log.debug("Qt font registration skipped: %s", q_exc)
 
     _FONTS_REGISTERED = True
     return True
