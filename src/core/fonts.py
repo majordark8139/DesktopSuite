@@ -115,8 +115,8 @@ def register_bundled_fonts() -> bool:
 
     # 3. Fontconfig registration (Linux or Windows with fontconfig available)
     try:
-        import ctypes.util
-        fc_lib = ctypes.util.find_library("fontconfig")
+        from ctypes import util as ctypes_util
+        fc_lib = ctypes_util.find_library("fontconfig")
         if fc_lib:
             fc = ctypes.CDLL(fc_lib)
             fc.FcConfigAppFontAddDir(None, str(font_dir).encode("utf-8"))

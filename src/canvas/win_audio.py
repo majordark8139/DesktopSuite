@@ -66,6 +66,7 @@ if sys.platform == "win32":
     KSDATAFORMAT_SUBTYPE_PCM        = _guid("{00000001-0000-0010-8000-00AA00389B71}")
 
     class WAVEFORMATEX(ctypes.Structure):
+        _pack_ = 1
         _fields_ = [
             ("wFormatTag", wintypes.WORD),
             ("nChannels", wintypes.WORD),
@@ -77,6 +78,7 @@ if sys.platform == "win32":
         ]
 
     class WAVEFORMATEXTENSIBLE(ctypes.Structure):
+        _pack_ = 1
         _fields_ = [
             ("Format", WAVEFORMATEX),
             ("Samples", wintypes.WORD),
@@ -211,7 +213,7 @@ class WinAudioStream:
                 if wFormatTag == 3:  # WAVE_FORMAT_IEEE_FLOAT
                     is_float = True
                     subfmt_info = "WAVE_FORMAT_IEEE_FLOAT"
-                elif wFormatTag == 0xFFFE:  # WAVE_FORMAT_EXTENSIBLE
+                elif wFormatTag == 0xFFFE and fmt.cbSize >= 22:  # WAVE_FORMAT_EXTENSIBLE
                     ext = ctypes.cast(pwfx, ctypes.POINTER(WAVEFORMATEXTENSIBLE)).contents
                     subfmt_hex = bytes(ext.SubFormat).hex()
                     if ext.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT:
@@ -356,6 +358,9 @@ class WinAudioStream:
                             if is_float:
                                 raw_array = (ctypes.c_float * total_samples).from_address(pData.value)
                                 samples = np.frombuffer(raw_array, dtype=np.float32).copy()
+                            elif bits == 32:
+                                raw_array = (ctypes.c_int32 * total_samples).from_address(pData.value)
+                                samples = np.frombuffer(raw_array, dtype=np.int32).astype(np.float32) / 2147483648.0
                             else:
                                 raw_array = (ctypes.c_int16 * total_samples).from_address(pData.value)
                                 samples = np.frombuffer(raw_array, dtype=np.int16).astype(np.float32) / 32768.0

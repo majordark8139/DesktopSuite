@@ -449,7 +449,7 @@ class WinWallpaperEngine:
         if sys.platform != "win32":
             return 0
 
-        dwm_active = self.is_dwm_enabled()
+        dwm_active = self.is_dwm_aero_enabled()
         log.info("ensure_workerw(): DWM composition enabled = %s", dwm_active)
 
         # 1. Ensure Windows 7 Client-Area Animation is enabled before 0x052C
