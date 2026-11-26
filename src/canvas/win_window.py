@@ -190,6 +190,9 @@ class WinDesktopCanvasWindow(QWidget):
 
         # 3. Clear shared surface (wipe RAM buffer to 0x00000000)
         self._shared_surface.clear_transparent()
+        if self._surface is not self._shared_surface.cairo_surface:
+            self._surface = self._shared_surface.cairo_surface
+            self._ctx = self._shared_surface.create_context()
         self._ctx.set_operator(cairo.OPERATOR_OVER)
 
         # 4. Extract configuration snapshot

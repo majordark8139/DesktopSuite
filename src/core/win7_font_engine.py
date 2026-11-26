@@ -23,14 +23,6 @@ import cairo
 
 log = logging.getLogger(__name__)
 
-try:
-    from PyQt5 import sip as _qt_sip  # type: ignore
-except ImportError:
-    try:
-        import sip as _qt_sip  # type: ignore
-    except ImportError:
-        _qt_sip = None
-
 
 def enable_qt_freetype_on_win7() -> None:
     """
@@ -214,81 +206,85 @@ class BundledFontRegistry:
 class SharedCairoQtSurface:
     """
     Zero-copy shared memory ARGB32 surface between PyCairo and PyQt5 QPainter.
-    Both cairo.FORMAT_ARGB32 and QImage.Format_ARGB32_Premultiplied operate on
-    the exact same underlying pinned ctypes buffer so Qt never detaches on clear.
+    Qt's QImage owns a writable unshared buffer (ref=1, ro_data=False) and PyCairo
+    draws directly into that scanline memory so QPainter never detaches onto a copy.
     """
 
     def __init__(self, width: int, height: int, font_registry: BundledFontRegistry) -> None:
+        from PyQt5.QtGui import QImage
+
         self.width = max(1, width)
         self.height = max(1, height)
-        self.stride = self.width * 4
-        self._buf_size = self.stride * self.height
         self.font_registry = font_registry
         self._disposed = False
 
-        # Allocate single pinned mutable buffer (never relocated or GC'd early)
-        self._buffer = (ctypes.c_ubyte * self._buf_size)()
-        self._buf_addr = ctypes.addressof(self._buffer)
+        # Qt allocates and owns its native aligned ARGB32_Premultiplied buffer (ro_data=False)
+        self.qimage = QImage(self.width, self.height, QImage.Format_ARGB32_Premultiplied)
+        self.qimage.fill(0)
 
-        # Create Cairo ImageSurface directly over pinned buffer
+        self.stride = self.qimage.bytesPerLine()
+        self._buf_size = self.stride * self.height
+        self._buf_addr = 0
+        self._buffer: Any = None
+        self.cairo_surface: Any = None
+        self._bind_cairo_surface()
+
+    def _bind_cairo_surface(self) -> None:
+        """Bind (or rebind) Cairo's ImageSurface directly over self.qimage's writable buffer."""
+        if self._disposed or self.qimage is None:
+            return
+        if self.cairo_surface is not None:
+            try:
+                self.cairo_surface.finish()
+            except Exception:
+                pass
+            self.cairo_surface = None
+
+        bits_ptr = self.qimage.bits()
+        self._buf_addr = int(bits_ptr)
+        self._buffer = (ctypes.c_ubyte * self._buf_size).from_address(self._buf_addr)
         self.cairo_surface = cairo.ImageSurface.create_for_data(
             self._buffer, cairo.FORMAT_ARGB32, self.width, self.height, self.stride
         )
 
-        # Create mutable QImage over the exact same address via non-const sip.voidptr
-        # so Qt sets ro_data=false and never detaches during QPainter(self.qimage).
-        self._paint_ptr = None
-        self._blit_ptr = None
-        self.qimage = self._make_qimage(writable=True)
-        self._blit_qimage = self._make_qimage(writable=False)
-
         try:
-            q_addr = int(self.qimage.bits())
-            if q_addr != self._buf_addr:
+            q_const_addr = int(self.qimage.constBits())
+            if q_const_addr != self._buf_addr:
                 log.warning(
                     "SharedCairoQtSurface address mismatch: qimage=0x%X vs buffer=0x%X",
-                    q_addr, self._buf_addr,
+                    q_const_addr, self._buf_addr,
                 )
         except Exception:
             pass
 
-    def _make_qimage(self, writable: bool) -> Any:
-        from PyQt5.QtGui import QImage
-        if _qt_sip is not None:
-            ptr = _qt_sip.voidptr(self._buf_addr, self._buf_size, writable)
-            if writable:
-                self._paint_ptr = ptr
-            else:
-                self._blit_ptr = ptr
-            return QImage(
-                ptr, self.width, self.height, self.stride,
-                QImage.Format_ARGB32_Premultiplied,
-            )
-        return QImage(
-            self._buffer, self.width, self.height, self.stride,
-            QImage.Format_ARGB32_Premultiplied,
-        )
-
     def clear_transparent(self) -> None:
         """
         Wipes the shared ARGB32 RAM buffer to 0x00000000 (fully transparent)
-        in place via memset without triggering QImage::fill() copy-on-write detach.
+        and ensures Cairo remains bound to self.qimage's current scanline address.
         """
-        if self._disposed or self._buffer is None:
+        if self._disposed or self.qimage is None:
             return
-        self.cairo_surface.flush()
-        ctypes.memset(self._buf_addr, 0, self._buf_size)
-        self.cairo_surface.mark_dirty()
+        if self.cairo_surface is not None:
+            self.cairo_surface.flush()
+        self.qimage.fill(0)
+        cur_addr = int(self.qimage.constBits())
+        if cur_addr != self._buf_addr:
+            log.warning(
+                "SharedCairoQtSurface rebound after QImage relocate: 0x%X -> 0x%X",
+                self._buf_addr, cur_addr,
+            )
+            self._bind_cairo_surface()
+        if self.cairo_surface is not None:
+            self.cairo_surface.mark_dirty()
 
     def get_blit_qimage(self) -> Any:
-        """
-        Return a fresh read-only QImage header pointing to the exact shared buffer
-        for QPainter.drawImage(), avoiding Qt cacheKey staleness and keeping paint-target refcount at 1.
-        """
-        return self._make_qimage(writable=False)
+        """Flush pending Cairo drawing and return the shared QImage for QPainter.drawImage()."""
+        if self.cairo_surface is not None:
+            self.cairo_surface.flush()
+        return self.qimage
 
     def dispose(self) -> None:
-        """Deterministically release Cairo and Qt handles before buffer teardown."""
+        """Deterministically release Cairo handle before freeing QImage buffer."""
         if self._disposed:
             return
         self._disposed = True
@@ -298,12 +294,9 @@ class SharedCairoQtSurface:
                 self.cairo_surface.finish()
         except Exception:
             pass
-        self._blit_qimage = None
-        self.qimage = None
-        self._blit_ptr = None
-        self._paint_ptr = None
         self.cairo_surface = None
         self._buffer = None
+        self.qimage = None
 
     def create_context(self) -> Win7CairoContext:
         """Create a drop-in Win7CairoContext proxy operating on this surface."""

@@ -17,9 +17,10 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 try:
-    import numpy as _np  # noqa: F401
+    import numpy as np
     _HAS_NUMPY = True
 except ImportError:
+    np = None
     _HAS_NUMPY = False
 
 
@@ -57,6 +58,7 @@ class TestWinAudioStructsAndFonts(unittest.TestCase):
 
 try:
     import cairo as _cairo  # noqa: F401
+    from PyQt5.QtGui import QImage, QPainter
     from PyQt5.QtWidgets import QApplication
     _HAS_CAIRO_QT = True
 except Exception:
@@ -89,14 +91,17 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             td = TimeData(is_24h=False)
             bars = np.ones(27, dtype=np.float32)
 
-            for _ in range(3):
+            def _render_once() -> None:
                 surface.clear_transparent()
                 ctx = surface.create_context()
                 theme.draw_clock(ctx, 500, 120, cfg, td)
                 theme.draw_visualizer(ctx, 500, 120, cfg, bars)
 
+            for _ in range(3):
+                _render_once()
+
             blit_img = surface.get_blit_qimage()
-            self.assertEqual(int(blit_img.bits()), surface._buf_addr)
+            self.assertEqual(int(blit_img.constBits()), surface._buf_addr)
             self.assertEqual(blit_img.pixelColor(0, 0).alpha(), 0)
 
             vis_px = blit_img.pixelColor(215, 108)
@@ -104,7 +109,29 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             self.assertGreater(vis_px.red(), 150)
             self.assertEqual(vis_px.green(), 0)
             self.assertEqual(vis_px.blue(), 0)
+
+            # Simulate WinCanvasWindow.paintEvent blitting onto a Qt surface, then re-render
+            dest = QImage(500, 120, QImage.Format_ARGB32_Premultiplied)
+            dest.fill(0)
+            painter = QPainter(dest)
+            try:
+                painter.drawImage(0, 0, blit_img)
+            finally:
+                painter.end()
             del blit_img
+
+            blitted_px = dest.pixelColor(215, 108)
+            self.assertGreater(blitted_px.alpha(), 150)
+            self.assertGreater(blitted_px.red(), 150)
+
+            for _ in range(3):
+                _render_once()
+            blit_img2 = surface.get_blit_qimage()
+            self.assertEqual(int(blit_img2.constBits()), surface._buf_addr)
+            vis_px2 = blit_img2.pixelColor(215, 108)
+            self.assertGreater(vis_px2.alpha(), 150)
+            self.assertGreater(vis_px2.red(), 150)
+            del blit_img2
         finally:
             surface.dispose()
 
