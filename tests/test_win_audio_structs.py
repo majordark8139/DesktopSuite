@@ -277,7 +277,7 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             for w, h in ((win.width(), win.height()), (460, 480)):
                 win.resize(w, h)
                 app.processEvents()
-                for tab_btn in (win.btn_tab_wp, win.btn_tab_cv):
+                for tab_btn in (win.btn_tab_wp, win.btn_tab_cv, win.btn_tab_app):
                     txt = tab_btn.text().replace("&&", "&")
                     needed_w = tab_btn.fontMetrics().horizontalAdvance(txt)
                     self.assertGreaterEqual(
@@ -294,6 +294,11 @@ class TestSharedCairoQtSurface(unittest.TestCase):
                 app.processEvents()
                 self.assertLessEqual(win.content_cv.width(), win.scroll_cv.viewport().width())
                 self.assertLessEqual(win.content_cv.minimumSizeHint().width(), win.scroll_cv.viewport().width())
+
+                win.btn_tab_app.click()
+                app.processEvents()
+                self.assertLessEqual(win.content_app.width(), win.scroll_app.viewport().width())
+                self.assertLessEqual(win.content_app.minimumSizeHint().width(), win.scroll_app.viewport().width())
         finally:
             win.close()
             app.processEvents()

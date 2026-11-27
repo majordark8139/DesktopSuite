@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QEvent, QTimer
 from PyQt5.QtGui import QColor, QFont, QIcon, QPixmap, QPalette
 
-from src.core.diagnostics import get_rate_limiter
+from src.core.diagnostics import get_log_dir, get_rate_limiter
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +45,19 @@ HOTKEY_PRESETS = {
     "Disabled": None,
 }
 
+QUIT_HOTKEY_PRESETS = {
+    "Disabled": None,
+    "Ctrl + Alt + Q": (MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord('Q')),
+    "Ctrl + Shift + Q": (MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, ord('Q')),
+    "Alt + Q": (MOD_ALT | MOD_NOREPEAT, ord('Q')),
+    "Win + Shift + Q": (MOD_WIN | MOD_SHIFT | MOD_NOREPEAT, ord('Q')),
+    "Ctrl + Alt + X": (MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord('X')),
+}
+
 _WIN_DARK_QSS = """
-QMainWindow, QWidget#CentralWidget, QWidget#tab_wp, QWidget#tab_cv, QWidget#content_wp, QWidget#content_cv {
+QMainWindow, QWidget#CentralWidget,
+QWidget#tab_wp, QWidget#tab_cv, QWidget#tab_app,
+QWidget#content_wp, QWidget#content_cv, QWidget#content_app {
     background-color: #1e1e2e;
     color: #cdd6f4;
     font-family: 'Segoe UI', Arial, sans-serif;
@@ -224,13 +235,16 @@ class ControlCenterWindow(QMainWindow):
     """
 
     HOTKEY_ID = 1001
+    QUIT_HOTKEY_ID = 1002
 
     def __init__(self, controller: Any) -> None:
         super().__init__()
         self.ctrl = controller
         self.cfg = controller.cfg
         self._building = True
+        self._allow_close = False
         self._current_hotkey = self.cfg.get("wallpaper.shortcut", "Win + W (Default)")
+        self._current_quit_hotkey = self.cfg.get("app.quit_shortcut", "Disabled")
         self._cfg_dirty = False
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -277,19 +291,27 @@ class ControlCenterWindow(QMainWindow):
         self.btn_tab_wp.setMinimumWidth(0)
         self.btn_tab_wp.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        self.btn_tab_cv = QPushButton("Clock && Canvas Studio")
+        self.btn_tab_cv = QPushButton("Clock && Canvas")
         self.btn_tab_cv.setProperty("tabBtn", "true")
         self.btn_tab_cv.setCheckable(True)
         self.btn_tab_cv.setMinimumWidth(0)
         self.btn_tab_cv.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        self.btn_tab_app = QPushButton("App Settings")
+        self.btn_tab_app.setProperty("tabBtn", "true")
+        self.btn_tab_app.setCheckable(True)
+        self.btn_tab_app.setMinimumWidth(0)
+        self.btn_tab_app.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
         self._tab_group = QButtonGroup(self)
         self._tab_group.setExclusive(True)
         self._tab_group.addButton(self.btn_tab_wp, 0)
         self._tab_group.addButton(self.btn_tab_cv, 1)
+        self._tab_group.addButton(self.btn_tab_app, 2)
 
         tab_header.addWidget(self.btn_tab_wp, 1)
         tab_header.addWidget(self.btn_tab_cv, 1)
+        tab_header.addWidget(self.btn_tab_app, 1)
         main_layout.addLayout(tab_header)
 
         tab_container = QFrame()
@@ -303,123 +325,176 @@ class ControlCenterWindow(QMainWindow):
         main_layout.addWidget(tab_container, 1)
 
         # Page 0: Live Wallpaper
-        tab_wp = QWidget()
-        tab_wp.setObjectName("tab_wp")
-        self.scroll_wp = QScrollArea()
-        self.scroll_wp.setObjectName("scroll_wp")
-        self.scroll_wp.setFrameShape(QFrame.NoFrame)
-        self.scroll_wp.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_wp.setWidgetResizable(True)
-        self.scroll_wp.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
-        self.content_wp = QWidget()
-        self.content_wp.setObjectName("content_wp")
-        layout_wp = QVBoxLayout(self.content_wp)
-        layout_wp.setSpacing(8)
-        layout_wp.setContentsMargins(8, 4, 10, 10)
+        tab_wp, self.scroll_wp, self.content_wp, layout_wp = self._make_scroll_page("wp")
         self._build_wallpaper_tab(layout_wp)
-        self.scroll_wp.setWidget(self.content_wp)
-        layout_tab_wp = QVBoxLayout(tab_wp)
-        layout_tab_wp.setContentsMargins(0, 0, 0, 0)
-        layout_tab_wp.addWidget(self.scroll_wp)
         self.stack.addWidget(tab_wp)
 
         # Page 1: Clock & Canvas Studio
-        tab_cv = QWidget()
-        tab_cv.setObjectName("tab_cv")
-        self.scroll_cv = QScrollArea()
-        self.scroll_cv.setObjectName("scroll_cv")
-        self.scroll_cv.setFrameShape(QFrame.NoFrame)
-        self.scroll_cv.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll_cv.setWidgetResizable(True)
-        self.scroll_cv.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
-        self.content_cv = QWidget()
-        self.content_cv.setObjectName("content_cv")
-        layout_cv = QVBoxLayout(self.content_cv)
-        layout_cv.setSpacing(8)
-        layout_cv.setContentsMargins(8, 4, 10, 10)
+        tab_cv, self.scroll_cv, self.content_cv, layout_cv = self._make_scroll_page("cv")
         self._build_canvas_tab(layout_cv)
-        self.scroll_cv.setWidget(self.content_cv)
-        layout_tab_cv = QVBoxLayout(tab_cv)
-        layout_tab_cv.setContentsMargins(0, 0, 0, 0)
-        layout_tab_cv.addWidget(self.scroll_cv)
         self.stack.addWidget(tab_cv)
 
-        def _on_tab_selected(idx: int) -> None:
-            self.stack.setCurrentIndex(idx)
-            label = "Live Wallpaper" if idx == 0 else "Clock & Canvas Studio"
-            log.info("UI Tab switched -> %r (index=%d)", label, idx)
+        # Page 2: App Settings
+        tab_app, self.scroll_app, self.content_app, layout_app = self._make_scroll_page("app")
+        self._build_app_settings_tab(layout_app)
+        self.stack.addWidget(tab_app)
 
-        self.btn_tab_wp.clicked.connect(lambda: _on_tab_selected(0))
-        self.btn_tab_cv.clicked.connect(lambda: _on_tab_selected(1))
+        self.btn_tab_wp.clicked.connect(lambda: self.select_tab(0))
+        self.btn_tab_cv.clicked.connect(lambda: self.select_tab(1))
+        self.btn_tab_app.clicked.connect(lambda: self.select_tab(2))
 
         self._building = False
-        self._update_engine_status()
-        self._register_global_hotkey(self._current_hotkey)
+        self.sync_ui_states()
+        self.register_hotkeys()
         log.info(
-            "ControlCenterWindow initialized (hotkey=%r, theme=%r, video=%r, size=%dx%d)",
+            "ControlCenterWindow initialized (hotkey=%r, quit_hotkey=%r, theme=%r, video=%r, size=%dx%d)",
             self._current_hotkey,
+            self._current_quit_hotkey,
             self.cfg.get("canvas.active_theme"),
             self.cfg.get("wallpaper.video_path"),
             self.width(),
             self.height(),
         )
 
+    def _make_scroll_page(self, suffix: str) -> tuple[QWidget, QScrollArea, QWidget, QVBoxLayout]:
+        tab = QWidget()
+        tab.setObjectName(f"tab_{suffix}")
+        scroll = QScrollArea()
+        scroll.setObjectName(f"scroll_{suffix}")
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidgetResizable(True)
+        scroll.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
+        content = QWidget()
+        content.setObjectName(f"content_{suffix}")
+        lay = QVBoxLayout(content)
+        lay.setSpacing(8)
+        lay.setContentsMargins(8, 4, 10, 10)
+        scroll.setWidget(content)
+        tab_lay = QVBoxLayout(tab)
+        tab_lay.setContentsMargins(0, 0, 0, 0)
+        tab_lay.addWidget(scroll)
+        return tab, scroll, content, lay
+
+    def select_tab(self, idx: int) -> None:
+        idx = max(0, min(idx, 2))
+        btn = self._tab_group.button(idx)
+        if btn is not None:
+            btn.setChecked(True)
+        self.stack.setCurrentIndex(idx)
+        labels = ("Live Wallpaper", "Clock & Canvas", "App Settings")
+        if not self._building:
+            log.info("UI Tab switched -> %r (index=%d)", labels[idx], idx)
+
     # -----------------------------------------------------------------------
-    # Native Event Handling for Global Win32 Hotkey
+    # Native Event Handling for Global Win32 Hotkeys
     # -----------------------------------------------------------------------
 
     def nativeEvent(self, eventType, message) -> tuple[bool, int]:
         if eventType in (b"windows_generic_MSG", "windows_generic_MSG"):
             try:
                 msg = wintypes.MSG.from_address(int(message))
-                if msg.message == WM_HOTKEY and msg.wParam == self.HOTKEY_ID:
-                    self._on_global_hotkey_triggered()
-                    return True, 0
+                if msg.message == WM_HOTKEY:
+                    if msg.wParam == self.HOTKEY_ID:
+                        self._on_global_hotkey_triggered()
+                        return True, 0
+                    if msg.wParam == self.QUIT_HOTKEY_ID:
+                        self._on_quit_hotkey_triggered()
+                        return True, 0
             except Exception as exc:
                 allowed, suppressed = get_rate_limiter().check("ui:nativeEvent", interval=5.0)
                 if allowed:
                     log.warning("nativeEvent MSG handling error (suppressed=%d): %s", suppressed, exc)
         return super().nativeEvent(eventType, message)
 
-    def _register_global_hotkey(self, hotkey_name: str) -> bool:
-        """Register the system-wide global hotkey via Win32 RegisterHotKey."""
+    def register_hotkeys(self) -> None:
+        self._register_global_hotkey(self._current_hotkey)
+        self._register_quit_hotkey(self._current_quit_hotkey)
+
+    def _unregister_all_hotkeys(self) -> None:
         try:
             user32 = ctypes.windll.user32
             hwnd = int(self.winId())
             user32.UnregisterHotKey(hwnd, self.HOTKEY_ID)
+            user32.UnregisterHotKey(hwnd, self.QUIT_HOTKEY_ID)
+        except Exception:
+            pass
 
-            if hotkey_name not in HOTKEY_PRESETS or hotkey_name == "Disabled":
-                self.lbl_hk_status.setText("● Hotkey Disabled")
-                self.lbl_hk_status.setStyleSheet("color: #a6adc8; font-weight: normal;")
-                self._current_hotkey = "Disabled"
+    def _register_win32_hotkey(
+        self,
+        hotkey_id: int,
+        hotkey_name: str,
+        presets: dict[str, Any],
+        cfg_key: str,
+        status_label: QLabel,
+        disabled_text: str,
+        active_suffix: str,
+        log_name: str,
+    ) -> tuple[bool, str]:
+        """Shared Win32 RegisterHotKey helper for wallpaper toggle & quit shortcuts."""
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            user32.UnregisterHotKey(hwnd, hotkey_id)
+
+            if hotkey_name not in presets or hotkey_name == "Disabled":
+                status_label.setText(disabled_text)
+                status_label.setStyleSheet("color: #a6adc8; font-weight: normal;")
                 if not self._building:
-                    self.cfg.set("wallpaper.shortcut", "Disabled")
+                    self.cfg.set(cfg_key, "Disabled")
                     self.cfg.save()
-                log.info("Global Windows hotkey disabled")
-                return False
+                log.info("%s disabled", log_name)
+                return False, "Disabled"
 
-            params = HOTKEY_PRESETS[hotkey_name]
+            params = presets[hotkey_name]
             if params is None:
-                return False
+                return False, "Disabled"
 
             mods, vk = params
-            res = user32.RegisterHotKey(hwnd, self.HOTKEY_ID, mods, vk)
-            if res:
-                self._current_hotkey = hotkey_name
-                self.cfg.set("wallpaper.shortcut", hotkey_name)
-                self.cfg.save()
-                self.lbl_hk_status.setText(f"● Hotkey Active: {hotkey_name} (press anywhere in Windows to toggle/kill)")
-                self.lbl_hk_status.setStyleSheet("color: #a6e3a1; font-weight: bold;")
-                log.info("Registered global Windows hotkey: %s", hotkey_name)
-                return True
-            else:
-                self.lbl_hk_status.setText(f"⚠ Could not bind {hotkey_name} (in use by another application)")
-                self.lbl_hk_status.setStyleSheet("color: #fab387; font-weight: bold;")
-                log.warning("Could not register hotkey %s (Win32 error: %s)", hotkey_name, ctypes.GetLastError())
-                return False
+            if user32.RegisterHotKey(hwnd, hotkey_id, mods, vk):
+                if not self._building:
+                    self.cfg.set(cfg_key, hotkey_name)
+                    self.cfg.save()
+                status_label.setText(f"● Active: {hotkey_name} ({active_suffix})")
+                status_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+                log.info("Registered %s: %s", log_name, hotkey_name)
+                return True, hotkey_name
+
+            status_label.setText(f"⚠ Could not bind {hotkey_name} (in use by another app)")
+            status_label.setStyleSheet("color: #fab387; font-weight: bold;")
+            log.warning("Could not register %s %s (Win32 err=%s)", log_name, hotkey_name, ctypes.GetLastError())
+            return False, hotkey_name
         except Exception as exc:
-            log.warning("RegisterHotKey exception: %s", exc)
-            return False
+            log.warning("RegisterHotKey (%s) exception: %s", log_name, exc)
+            return False, hotkey_name
+
+    def _register_global_hotkey(self, hotkey_name: str) -> bool:
+        ok, resolved = self._register_win32_hotkey(
+            self.HOTKEY_ID,
+            hotkey_name,
+            HOTKEY_PRESETS,
+            "wallpaper.shortcut",
+            self.lbl_hk_status,
+            "● Hotkey Disabled",
+            "press anywhere to toggle/kill",
+            "global toggle hotkey",
+        )
+        self._current_hotkey = resolved
+        return ok
+
+    def _register_quit_hotkey(self, hotkey_name: str) -> bool:
+        ok, resolved = self._register_win32_hotkey(
+            self.QUIT_HOTKEY_ID,
+            hotkey_name,
+            QUIT_HOTKEY_PRESETS,
+            "app.quit_shortcut",
+            self.lbl_quit_hk_status,
+            "● Quit Hotkey Disabled",
+            "press anywhere to exit DesktopSuite",
+            "global quit hotkey",
+        )
+        self._current_quit_hotkey = resolved
+        return ok
 
     def _on_global_hotkey_triggered(self) -> None:
         """Toggles wallpaper playback or kills active video engine on global shortcut press."""
@@ -430,19 +505,47 @@ class ControlCenterWindow(QMainWindow):
         else:
             self.ctrl.start_wallpaper()
             log.info("Global hotkey: Started live wallpaper")
-        self._update_engine_status()
+        self.sync_ui_states()
+
+    def _on_quit_hotkey_triggered(self) -> None:
+        """Exit DesktopSuite completely when the global quit hotkey is pressed."""
+        log.info("Global quit hotkey triggered: %s -> quitting DesktopSuite", self._current_quit_hotkey)
+        if hasattr(self.ctrl, "quit_app"):
+            self.ctrl.quit_app()
+        else:
+            self.force_close()
 
     def showEvent(self, event) -> None:
         log.info("ControlCenterWindow.showEvent()")
+        self.sync_ui_states()
         super().showEvent(event)
 
     def hideEvent(self, event) -> None:
         log.info("ControlCenterWindow.hideEvent()")
         super().hideEvent(event)
 
+    def _hide_to_tray_on_minimize(self) -> None:
+        if self._allow_close:
+            return
+        self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+        self.hide()
+        notify = getattr(self.ctrl, "notify_tray_hidden", None)
+        if callable(notify):
+            notify("minimized")
+        log.info("ControlCenterWindow minimized to notification tray")
+
     def changeEvent(self, event) -> None:
         if event.type() == QEvent.WindowStateChange:
-            log.info("ControlCenterWindow state changed -> minimized=%s", self.isMinimized())
+            minimized = self.isMinimized()
+            log.info("ControlCenterWindow state changed -> minimized=%s", minimized)
+            tray_ok = bool(getattr(self.ctrl, "is_tray_available", lambda: False)())
+            if (
+                minimized
+                and not self._allow_close
+                and tray_ok
+                and bool(self.cfg.get("app.minimize_to_tray", False))
+            ):
+                QTimer.singleShot(0, self._hide_to_tray_on_minimize)
         super().changeEvent(event)
 
     def _schedule_cfg_save(self) -> None:
@@ -469,18 +572,41 @@ class ControlCenterWindow(QMainWindow):
         lbl.setFixedWidth(width)
         return lbl
 
-    def closeEvent(self, event) -> None:
-        """Flush pending config saves and unregister hotkey when window closes."""
-        log.info("ControlCenterWindow.closeEvent() -> closing Control Center")
+    def force_close(self) -> None:
+        """Force real window shutdown during application exit (bypasses close-to-tray)."""
+        self._allow_close = True
         try:
             self._flush_cfg_save()
         except Exception:
             pass
+        self._unregister_all_hotkeys()
+        self.close()
+        self.deleteLater()
+
+    def closeEvent(self, event) -> None:
+        """Hide to notification tray when close_to_tray is enabled, otherwise quit cleanly."""
         try:
-            ctypes.windll.user32.UnregisterHotKey(int(self.winId()), self.HOTKEY_ID)
+            self._flush_cfg_save()
         except Exception:
             pass
+
+        tray_ok = bool(getattr(self.ctrl, "is_tray_available", lambda: False)())
+        close_to_tray = bool(self.cfg.get("app.close_to_tray", True))
+
+        if not self._allow_close and tray_ok and close_to_tray:
+            log.info("ControlCenterWindow.closeEvent() -> hiding to notification tray (app.close_to_tray=True)")
+            event.ignore()
+            self.hide()
+            notify = getattr(self.ctrl, "notify_tray_hidden", None)
+            if callable(notify):
+                notify("closed")
+            return
+
+        log.info("ControlCenterWindow.closeEvent() -> closing Control Center (allow_close=%s)", self._allow_close)
+        self._unregister_all_hotkeys()
         event.accept()
+        if not self._allow_close and hasattr(self.ctrl, "quit_app"):
+            QTimer.singleShot(0, self.ctrl.quit_app)
 
     # -----------------------------------------------------------------------
     # Tab 1: Live Wallpaper
@@ -1053,6 +1179,183 @@ class ControlCenterWindow(QMainWindow):
         layout.addStretch()
 
     # -----------------------------------------------------------------------
+    # Tab 2: App Settings & Notification Tray
+    # -----------------------------------------------------------------------
+
+    def _build_app_settings_tab(self, layout: QVBoxLayout) -> None:
+        # 1. Notification Tray & Window Behavior
+        grp_tray = QGroupBox("Notification Tray && Window Behavior")
+        v_tray = QVBoxLayout(grp_tray)
+        v_tray.setSpacing(10)
+
+        lbl_tray_desc = QLabel(
+            "Keep DesktopSuite running silently in the Windows notification tray when closing or minimizing Control Center."
+        )
+        lbl_tray_desc.setWordWrap(True)
+        lbl_tray_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        lbl_tray_desc.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        v_tray.addWidget(lbl_tray_desc)
+
+        chk_close_tray = QCheckBox("Close (X) hides to notification tray")
+        chk_close_tray.setChecked(bool(self.cfg.get("app.close_to_tray", True)))
+        chk_close_tray.toggled.connect(lambda v: self._on_app_flag_toggled("app.close_to_tray", v))
+        v_tray.addWidget(chk_close_tray)
+
+        chk_min_tray = QCheckBox("Minimize (_) hides to notification tray")
+        chk_min_tray.setChecked(bool(self.cfg.get("app.minimize_to_tray", False)))
+        chk_min_tray.toggled.connect(lambda v: self._on_app_flag_toggled("app.minimize_to_tray", v))
+        v_tray.addWidget(chk_min_tray)
+
+        chk_start_min = QCheckBox("Start minimized in notification tray")
+        chk_start_min.setChecked(bool(self.cfg.get("app.start_minimized", False)))
+        chk_start_min.toggled.connect(lambda v: self._on_app_flag_toggled("app.start_minimized", v))
+        v_tray.addWidget(chk_start_min)
+
+        lbl_tray_hint = QLabel("Tip: Right-click the tray icon anytime for Pause/Restart controls or Exit DesktopSuite.")
+        lbl_tray_hint.setWordWrap(True)
+        lbl_tray_hint.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        lbl_tray_hint.setStyleSheet("color: #89b4fa; font-size: 11px;")
+        v_tray.addWidget(lbl_tray_hint)
+
+        layout.addWidget(grp_tray)
+
+        # 2. Global Quit App Shortcut
+        grp_quit_hk = QGroupBox("Global Quit Application Shortcut")
+        v_qhk = QVBoxLayout(grp_quit_hk)
+        v_qhk.setSpacing(8)
+
+        lbl_qhk_desc = QLabel(
+            "System-wide shortcut to completely exit DesktopSuite (stops wallpaper, clock overlay, and tray icon)."
+        )
+        lbl_qhk_desc.setWordWrap(True)
+        lbl_qhk_desc.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        lbl_qhk_desc.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        v_qhk.addWidget(lbl_qhk_desc)
+
+        h_qhk_sel = QHBoxLayout()
+        h_qhk_sel.setSpacing(8)
+        h_qhk_sel.addWidget(self._make_field_label("Quit Hotkey:"))
+        self.cb_quit_hotkey = QComboBox()
+        self.cb_quit_hotkey.setMinimumWidth(0)
+        for k in QUIT_HOTKEY_PRESETS.keys():
+            self.cb_quit_hotkey.addItem(k)
+        cur_qhk = self.cfg.get("app.quit_shortcut") or "Disabled"
+        if cur_qhk in QUIT_HOTKEY_PRESETS:
+            self.cb_quit_hotkey.setCurrentText(cur_qhk)
+        h_qhk_sel.addWidget(self.cb_quit_hotkey, 1)
+        v_qhk.addLayout(h_qhk_sel)
+
+        h_qhk_btns = QHBoxLayout()
+        h_qhk_btns.setSpacing(8)
+        btn_bind_qhk = QPushButton("Bind Quit Key")
+        btn_bind_qhk.setMinimumWidth(0)
+        btn_bind_qhk.setStyleSheet("""
+            QPushButton {
+                background-color: #89b4fa;
+                color: #11111b;
+                border-radius: 6px;
+                padding: 7px 12px;
+                font-weight: bold;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #b4befe;
+            }
+        """)
+        btn_bind_qhk.clicked.connect(lambda: self._register_quit_hotkey(self.cb_quit_hotkey.currentText()))
+
+        btn_disable_qhk = QPushButton("Disable")
+        btn_disable_qhk.setMinimumWidth(0)
+        btn_disable_qhk.clicked.connect(
+            lambda: (self.cb_quit_hotkey.setCurrentText("Disabled"), self._register_quit_hotkey("Disabled"))
+        )
+
+        h_qhk_btns.addWidget(btn_bind_qhk, 1)
+        h_qhk_btns.addWidget(btn_disable_qhk, 1)
+        v_qhk.addLayout(h_qhk_btns)
+
+        self.lbl_quit_hk_status = QLabel("● Quit Hotkey Disabled")
+        self.lbl_quit_hk_status.setWordWrap(True)
+        self.lbl_quit_hk_status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.lbl_quit_hk_status.setStyleSheet("color: #a6adc8; font-size: 11px;")
+        v_qhk.addWidget(self.lbl_quit_hk_status)
+
+        layout.addWidget(grp_quit_hk)
+
+        # 3. Application Controls & Diagnostics
+        grp_app_act = QGroupBox("Application Controls && Diagnostics")
+        v_act = QVBoxLayout(grp_app_act)
+        v_act.setSpacing(8)
+
+        h_act_btns = QHBoxLayout()
+        h_act_btns.setSpacing(8)
+
+        btn_hide_tray = QPushButton("Hide to Tray")
+        btn_hide_tray.setMinimumWidth(0)
+        btn_hide_tray.clicked.connect(self._on_hide_to_tray_clicked)
+
+        btn_open_logs = QPushButton("Open Logs Folder")
+        btn_open_logs.setMinimumWidth(0)
+        btn_open_logs.clicked.connect(self._on_open_logs_dir)
+
+        btn_exit_app = QPushButton("✕  Exit DesktopSuite")
+        btn_exit_app.setMinimumWidth(0)
+        btn_exit_app.setStyleSheet("""
+            QPushButton {
+                background-color: #e53935;
+                color: #ffffff;
+                border-radius: 6px;
+                padding: 8px 10px;
+                font-weight: bold;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #ef5350;
+            }
+        """)
+        btn_exit_app.clicked.connect(self._on_quit_hotkey_triggered)
+
+        h_act_btns.addWidget(btn_hide_tray, 1)
+        h_act_btns.addWidget(btn_open_logs, 1)
+        v_act.addLayout(h_act_btns)
+        v_act.addWidget(btn_exit_app)
+
+        layout.addWidget(grp_app_act)
+        layout.addStretch()
+
+    def _on_app_flag_toggled(self, key: str, enabled: bool) -> None:
+        log.info("UI Change: %s=%s", key, enabled)
+        self.cfg.set(key, enabled)
+        self.cfg.save()
+
+    def _on_hide_to_tray_clicked(self) -> None:
+        tray_ok = bool(getattr(self.ctrl, "is_tray_available", lambda: False)())
+        if tray_ok:
+            log.info("UI Action: Hide to notification tray")
+            self.hide()
+            notify = getattr(self.ctrl, "notify_tray_hidden", None)
+            if callable(notify):
+                notify("minimized")
+        else:
+            log.info("UI Action: System tray unavailable -> minimizing window")
+            self.showMinimized()
+
+    def _on_open_logs_dir(self) -> None:
+        log_dir = get_log_dir()
+        log.info("UI Action: Open Logs Folder (%s)", log_dir)
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(log_dir))
+        except Exception as exc:
+            log.warning("Failed to open logs dir %s: %s", log_dir, exc)
+
+    def sync_ui_states(self) -> None:
+        """Keep status pill and drag toggle button synced with external/tray actions."""
+        self._update_engine_status()
+        editing = bool(getattr(self.ctrl, "canvas", None) and getattr(self.ctrl.canvas, "_edit_mode", False))
+        self._apply_drag_btn_style(editing)
+
+    # -----------------------------------------------------------------------
     # Helper methods & Callbacks
     # -----------------------------------------------------------------------
 
@@ -1259,9 +1562,7 @@ class ControlCenterWindow(QMainWindow):
         else:
             log.info("UI Color picker cancelled for %s", key)
 
-    def _on_toggle_drag(self) -> None:
-        editing = self.ctrl.toggle_canvas_edit_mode()
-        log.info("UI Action: Toggle Drag Mode -> editing=%s", editing)
+    def _apply_drag_btn_style(self, editing: bool) -> None:
         if editing:
             self.btn_drag.setText("Lock Positions (Save)")
             self.btn_drag.setObjectName("btn-lock")
@@ -1270,6 +1571,11 @@ class ControlCenterWindow(QMainWindow):
             self.btn_drag.setText("Unlock Drag Mode")
             self.btn_drag.setObjectName("btn-unlock")
             self.btn_drag.setStyleSheet("background-color: #00acc1; color: white; font-weight: bold; padding: 9px 12px; border-radius: 6px; border: 1px solid #26c6da;")
+
+    def _on_toggle_drag(self) -> None:
+        editing = self.ctrl.toggle_canvas_edit_mode()
+        log.info("UI Action: Toggle Drag Mode -> editing=%s", editing)
+        self._apply_drag_btn_style(editing)
 
     def _on_reset_layout(self) -> None:
         log.info("UI Action: Click Reset Center Layout")

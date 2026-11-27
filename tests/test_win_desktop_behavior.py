@@ -57,6 +57,26 @@ class _FakeUser32ZOrder:
         return 0
 
 
+class TestAppConfigDefaults(unittest.TestCase):
+    def test_app_tray_and_quit_shortcut_defaults(self):
+        from src.core.config import ConfigManager, DEFAULTS
+
+        self.assertIn("app", DEFAULTS)
+        self.assertTrue(DEFAULTS["app"]["close_to_tray"])
+        self.assertFalse(DEFAULTS["app"]["minimize_to_tray"])
+        self.assertFalse(DEFAULTS["app"]["start_minimized"])
+        self.assertEqual(DEFAULTS["app"]["quit_shortcut"], "Disabled")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.json"
+            cfg_path.write_text('{"wallpaper": {"fps_limit": "24"}}', encoding="utf-8")
+            mgr = ConfigManager(config_path=cfg_path)
+            self.assertEqual(mgr.get("wallpaper.fps_limit"), "24")
+            self.assertTrue(mgr.get("app.close_to_tray"))
+            self.assertFalse(mgr.get("app.minimize_to_tray"))
+            self.assertEqual(mgr.get("app.quit_shortcut"), "Disabled")
+
+
 class TestWinWallpaperEngineCommands(unittest.TestCase):
     def test_build_cmd_gpu_backends_mpv036_compatible_and_angle(self):
         from src.wallpaper.win_engine import WinWallpaperEngine
@@ -137,31 +157,142 @@ except Exception:
 
 class TestWinDesktopCanvasZOrderHelpers(unittest.TestCase):
     @unittest.skipUnless(_HAS_CANVAS_STACK, "Requires PyQt5 + cairo + numpy")
-    def test_zorder_anchor_and_insert_after(self):
+    def test_zorder_anchor_and_place_skips_elevated_uipi_windows(self):
         from src.canvas.win_window import (
-            _compute_desktop_insert_after,
+            _HWND_TOP,
             _find_desktop_anchor_hwnd,
             _is_window_above,
+            _place_above_anchor,
         )
 
-        # Typical Win7 Z-order: Taskbar(0x10) -> Chrome(0x20) -> Canvas(0x30) -> WorkerW#1(0x40) -> WorkerW#2(0x50) -> Progman(0x60)
+        # Typical Win7 Z-order: Taskbar(0x10) -> Chrome(0x20) -> AdminHWMonitor(0x25) -> Canvas(0x30) -> WorkerW#1(0x40) -> WorkerW#2(0x50) -> Progman(0x60)
         stub = _FakeUser32ZOrder(
-            z_order=[0x10, 0x20, 0x30, 0x40, 0x50, 0x60],
+            z_order=[0x10, 0x20, 0x25, 0x30, 0x40, 0x50, 0x60],
             children={
                 0x40: {"_class": "WorkerW", "SHELLDLL_DefView": 0x41},
                 0x50: {"_class": "WorkerW"},
             },
             progman=0x60,
         )
+        fake_k32 = mock.MagicMock()
+
+        def _set_pos(_hwnd, insert_after, _x, _y, _cx, _cy, _flags):
+            if insert_after == 0x25:
+                fake_k32.GetLastError.return_value = 5  # ERROR_ACCESS_DENIED (UIPI elevated)
+                return 0
+            fake_k32.GetLastError.return_value = 0
+            return 1
+
+        stub.SetWindowPos = _set_pos
+
         self.assertEqual(_find_desktop_anchor_hwnd(stub), 0x40)
         self.assertTrue(_is_window_above(0x30, 0x40, stub))
         self.assertFalse(_is_window_above(0x50, 0x40, stub))
-        # Immediately above WorkerW#1 (0x40), skipping Canvas itself (0x30), lands after Chrome (0x20)
-        self.assertEqual(_compute_desktop_insert_after(0x30, 0x40, stub), 0x20)
+
+        # Skipping Canvas(0x30) hits elevated 0x25 (err=5), then succeeds on Chrome(0x20)
+        ok, used_after, err = _place_above_anchor(0x30, 0x40, 0x13, user32_lib=stub, kernel32_lib=fake_k32)
+        self.assertTrue(ok)
+        self.assertEqual(used_after, 0x20)
+        self.assertEqual(err, 0)
+
+        # If every prev rejects with err=5, falls back cleanly to _HWND_TOP
+        stub_only_elevated = _FakeUser32ZOrder(
+            z_order=[0x25, 0x40],
+            children={0x40: {"_class": "WorkerW", "SHELLDLL_DefView": 0x41}},
+            progman=0x60,
+        )
+
+        def _set_pos_fallback(_hwnd, insert_after, _x, _y, _cx, _cy, _flags):
+            if insert_after == _HWND_TOP:
+                fake_k32.GetLastError.return_value = 0
+                return 1
+            fake_k32.GetLastError.return_value = 5
+            return 0
+
+        stub_only_elevated.SetWindowPos = _set_pos_fallback
+        ok_top, after_top, err_top = _place_above_anchor(
+            0x30, 0x40, 0x13, user32_lib=stub_only_elevated, kernel32_lib=fake_k32
+        )
+        self.assertTrue(ok_top)
+        self.assertEqual(after_top, _HWND_TOP)
+        self.assertEqual(err_top, 0)
 
         # Fallback to Progman when no WorkerW hosts SHELLDLL_DefView
         stub_no_ww = _FakeUser32ZOrder(z_order=[0x10, 0x20, 0x60], children={}, progman=0x60)
         self.assertEqual(_find_desktop_anchor_hwnd(stub_no_ww), 0x60)
+
+    @unittest.skipUnless(sys.platform == "win32" and _HAS_CANVAS_STACK, "Requires win32 + PyQt5 + cairo + numpy")
+    def test_control_center_close_to_tray_and_app_settings_tab(self):
+        from PyQt5.QtGui import QCloseEvent
+        from PyQt5.QtWidgets import QApplication
+        from src.themes.registry import REGISTRY
+        from src.windows.control_center import ControlCenterWindow
+
+        app = QApplication.instance() or QApplication([])
+
+        class _MemCfg:
+            def __init__(self) -> None:
+                self.data = {
+                    "wallpaper.video_path": "demo.mp4",
+                    "wallpaper.shortcut": "Disabled",
+                    "app.close_to_tray": True,
+                    "app.minimize_to_tray": False,
+                    "app.start_minimized": False,
+                    "app.quit_shortcut": "Disabled",
+                    "canvas.active_theme": "Original Cursive",
+                }
+
+            def get(self, key: str, default=None):
+                return self.data.get(key, default)
+
+            def set(self, key: str, val) -> None:
+                self.data[key] = val
+
+            def save(self) -> None:
+                pass
+
+        quit_calls = []
+
+        class _TrayCtrl:
+            def __init__(self) -> None:
+                self.cfg = _MemCfg()
+                self.registry = REGISTRY
+                self.engine = type("_E", (), {"is_running": lambda *_: False, "set_volume": lambda *a: None, "set_speed": lambda *a: None, "set_mute": lambda *a: None})()
+                self.app_icon = None
+                self.canvas = None
+                self.audio = type("_A", (), {"set_intensity": lambda *a: None})()
+
+            def is_tray_available(self) -> bool:
+                return True
+
+            def notify_tray_hidden(self, _reason: str = "closed") -> None:
+                pass
+
+            def quit_app(self) -> None:
+                quit_calls.append("quit")
+
+        win = ControlCenterWindow(_TrayCtrl())
+        try:
+            win.show()
+            app.processEvents()
+            win.btn_tab_app.click()
+            app.processEvents()
+            self.assertEqual(win.stack.currentIndex(), 2)
+
+            # With close_to_tray=True, X click ignores close, hides window, does NOT quit app
+            ev = QCloseEvent()
+            win.closeEvent(ev)
+            self.assertFalse(ev.isAccepted())
+            self.assertFalse(win.isVisible())
+            self.assertEqual(quit_calls, [])
+
+            # force_close bypasses close_to_tray for real shutdown
+            win.force_close()
+            self.assertTrue(win._allow_close)
+        finally:
+            if not win._allow_close:
+                win.force_close()
+            app.processEvents()
 
 
 if __name__ == "__main__":

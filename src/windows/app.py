@@ -13,9 +13,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon, QPixmap
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from src.core.config import ConfigManager
 from src.core.diagnostics import (
@@ -83,6 +83,7 @@ class WinAppController:
         self._gui_app = QApplication.instance()
         if self._gui_app is None:
             self._gui_app = QApplication(sys.argv)
+        self._gui_app.setQuitOnLastWindowClosed(False)
 
         self.app_icon = load_app_icon()
         if not self.app_icon.isNull():
@@ -129,6 +130,13 @@ class WinAppController:
         )
         self.canvas: Optional[WinDesktopCanvasWindow] = None
         self._gui_window = None
+        self._tray: Optional[QSystemTrayIcon] = None
+        self._tray_menu: Optional[QMenu] = None
+        self._tray_notified_once = False
+        self._act_wp_status = None
+        self._act_wp_pause = None
+        self._act_wp_toggle = None
+        self._act_drag_mode = None
         self._stopping = False
 
         self._gui_app.aboutToQuit.connect(self.stop_all)
@@ -243,6 +251,13 @@ class WinAppController:
         log.info("Controller.stop_all()")
         self.stop_canvas()
         self.stop_wallpaper()
+        if self._tray is not None:
+            try:
+                self._tray.hide()
+                self._tray.deleteLater()
+            except Exception:
+                pass
+            self._tray = None
         if self._msg_filter is not None and self._gui_app is not None:
             try:
                 self._gui_app.removeNativeEventFilter(self._msg_filter)
@@ -251,8 +266,11 @@ class WinAppController:
             self._msg_filter = None
         if self._gui_window is not None:
             try:
-                self._gui_window.close()
-                self._gui_window.deleteLater()
+                if hasattr(self._gui_window, "force_close"):
+                    self._gui_window.force_close()
+                else:
+                    self._gui_window.close()
+                    self._gui_window.deleteLater()
             except Exception:
                 pass
             self._gui_window = None
@@ -262,24 +280,196 @@ class WinAppController:
             except Exception:
                 pass
 
-    def show_control_center(self) -> None:
+    def quit_app(self) -> None:
+        """Fully shut down wallpaper, overlay, tray icon, and event loop."""
+        log.info("Controller.quit_app() requested")
+        self.stop_all()
+        if self._gui_app is not None:
+            self._gui_app.quit()
+
+    def is_tray_available(self) -> bool:
+        return bool(self._tray is not None and QSystemTrayIcon.isSystemTrayAvailable())
+
+    def notify_tray_hidden(self, reason: str = "closed") -> None:
+        if self._tray is None or self._tray_notified_once:
+            return
+        self._tray_notified_once = True
+        try:
+            action_word = "minimized" if reason == "minimized" else "closed"
+            self._tray.showMessage(
+                "DesktopSuite",
+                f"Control Center {action_word} to notification tray. Right-click the tray icon to manage or Exit.",
+                QSystemTrayIcon.Information,
+                2500,
+            )
+        except Exception:
+            pass
+
+    def _init_system_tray(self) -> None:
+        if self._tray is not None or not QSystemTrayIcon.isSystemTrayAvailable():
+            log.info("System tray skipped (already_init=%s, available=%s)", self._tray is not None, QSystemTrayIcon.isSystemTrayAvailable())
+            return
+
+        tray_icon = self.app_icon
+        if tray_icon.isNull():
+            from PyQt5.QtWidgets import QStyle
+            tray_icon = self._gui_app.style().standardIcon(QStyle.SP_DesktopIcon)
+
+        tray = QSystemTrayIcon(tray_icon, self._gui_app)
+        tray.setToolTip("DesktopSuite — Live Wallpaper & Clock")
+
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1e1e2e;
+                color: #cdd6f4;
+                border: 1px solid #45475a;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 18px 6px 12px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #313244;
+                color: #89b4fa;
+            }
+            QMenu::item:disabled {
+                color: #6c7086;
+            }
+            QMenu::separator {
+                height: 1px;
+                background: #313244;
+                margin: 4px 8px;
+            }
+        """)
+
+        act_open = menu.addAction("Open Control Center")
+        bold_font = act_open.font()
+        bold_font.setBold(True)
+        act_open.setFont(bold_font)
+        act_open.triggered.connect(lambda: self.show_control_center())
+        menu.setDefaultAction(act_open)
+
+        menu.addSeparator()
+
+        self._act_wp_status = menu.addAction("Wallpaper: Stopped")
+        self._act_wp_status.setEnabled(False)
+
+        self._act_wp_pause = menu.addAction("Pause / Resume Wallpaper")
+        self._act_wp_pause.triggered.connect(self._on_tray_pause)
+
+        self._act_wp_toggle = menu.addAction("Start Wallpaper")
+        self._act_wp_toggle.triggered.connect(self._on_tray_toggle_wallpaper)
+
+        act_restart = menu.addAction("Restart Wallpaper")
+        act_restart.triggered.connect(self._on_tray_restart_wallpaper)
+
+        self._act_drag_mode = menu.addAction("Unlock Drag Mode")
+        self._act_drag_mode.triggered.connect(self._on_tray_toggle_drag)
+
+        menu.addSeparator()
+
+        act_settings = menu.addAction("App Settings...")
+        act_settings.triggered.connect(lambda: self.show_control_center(tab_index=2))
+
+        menu.addSeparator()
+
+        act_exit = menu.addAction("Exit DesktopSuite")
+        act_exit.triggered.connect(self.quit_app)
+
+        menu.aboutToShow.connect(self._sync_tray_menu)
+        tray.activated.connect(self._on_tray_activated)
+        tray.setContextMenu(menu)
+        tray.show()
+
+        self._tray = tray
+        self._tray_menu = menu
+        log.info("Initialized Windows notification tray icon")
+
+    def _sync_tray_menu(self) -> None:
+        running = self.engine.is_running()
+        if self._act_wp_status is not None:
+            self._act_wp_status.setText("Wallpaper: Active" if running else "Wallpaper: Stopped")
+        if self._act_wp_pause is not None:
+            self._act_wp_pause.setEnabled(running)
+        if self._act_wp_toggle is not None:
+            self._act_wp_toggle.setText("Stop Wallpaper" if running else "Start Wallpaper")
+        if self._act_drag_mode is not None:
+            editing = bool(self.canvas and getattr(self.canvas, "_edit_mode", False))
+            self._act_drag_mode.setText("Lock Positions (Save)" if editing else "Unlock Drag Mode")
+
+    def _sync_control_center_ui(self) -> None:
+        if self._gui_window is not None and hasattr(self._gui_window, "sync_ui_states"):
+            try:
+                self._gui_window.sync_ui_states()
+            except Exception:
+                pass
+
+    def _on_tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            log.info("Tray icon activated (reason=%s) -> showing Control Center", reason)
+            self.show_control_center()
+
+    def _on_tray_pause(self) -> None:
+        log.info("Tray Action: Pause / Resume Wallpaper")
+        self.engine.toggle_pause()
+        self._sync_control_center_ui()
+
+    def _on_tray_toggle_wallpaper(self) -> None:
+        if self.engine.is_running():
+            log.info("Tray Action: Stop Wallpaper")
+            self.stop_wallpaper()
+        else:
+            log.info("Tray Action: Start Wallpaper")
+            self.start_wallpaper()
+        self._sync_control_center_ui()
+
+    def _on_tray_restart_wallpaper(self) -> None:
+        log.info("Tray Action: Restart Wallpaper")
+        self.restart_wallpaper()
+        self._sync_control_center_ui()
+
+    def _on_tray_toggle_drag(self) -> None:
+        log.info("Tray Action: Toggle Drag Mode")
+        self.toggle_canvas_edit_mode()
+        self._sync_control_center_ui()
+
+    def _ensure_control_center(self) -> Any:
         from src.windows.control_center import create_control_center
 
         if self._gui_window is None:
             log.info("Creating ControlCenterWindow")
             self._gui_window = create_control_center(self)
+            # Ensure native HWND exists immediately so global hotkeys work even while hidden in tray
+            self._gui_window.winId()
+            if hasattr(self._gui_window, "register_hotkeys"):
+                self._gui_window.register_hotkeys()
+        return self._gui_window
 
-        if self._gui_window:
-            log.info("Showing & raising ControlCenterWindow")
-            self._gui_window.show()
-            self._gui_window.raise_()
-            self._gui_window.activateWindow()
+    def show_control_center(self, tab_index: Optional[int] = None) -> None:
+        win = self._ensure_control_center()
+        if win:
+            if tab_index is not None and hasattr(win, "select_tab"):
+                win.select_tab(tab_index)
+            log.info("Showing & raising ControlCenterWindow (tab=%s)", tab_index)
+            if win.isMinimized():
+                win.setWindowState((win.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+            win.show()
+            win.raise_()
+            win.activateWindow()
+            self._sync_control_center_ui()
 
     def run(self, daemon: bool = False) -> None:
-        log.info("WinAppController.run(daemon=%s)", daemon)
+        start_minimized = bool(self.cfg.get("app.start_minimized", False))
+        log.info("WinAppController.run(daemon=%s, start_minimized=%s)", daemon, start_minimized)
         self.start_all()
-        if not daemon:
+        self._init_system_tray()
+        self._ensure_control_center()
+        if not daemon and not start_minimized:
             self.show_control_center()
+        elif start_minimized:
+            log.info("Launching minimized in notification tray (app.start_minimized=True)")
         try:
             rc = self._gui_app.exec_()
             log.info("QApplication.exec_() exited with code %s", rc)

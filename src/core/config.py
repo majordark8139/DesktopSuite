@@ -156,6 +156,23 @@ DEFAULTS: dict[str, Any] = {
         # Audio visualizer position (symmetrical 27-bar below date)
         "visualizer": {"x": 468, "y": 410},
     },
+
+    # ------------------------------------------------------------------ #
+    # App & Notification Tray section                                      #
+    # ------------------------------------------------------------------ #
+    "app": {
+        # Closing the Control Center window (X) hides to notification tray instead of quitting.
+        "close_to_tray": True,
+
+        # Minimizing Control Center (_) hides to notification tray.
+        "minimize_to_tray": False,
+
+        # Start Control Center hidden inside the notification tray on launch.
+        "start_minimized": False,
+
+        # Global shortcut to completely quit DesktopSuite (Windows RegisterHotKey label).
+        "quit_shortcut": "Disabled",
+    },
 }
 
 

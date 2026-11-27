@@ -43,6 +43,8 @@ _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_LAYERED = 0x00080000
 _WS_EX_NOACTIVATE = 0x08000000
 
+_HWND_TOPMOST = -1
+_HWND_NOTOPMOST = -2
 _HWND_TOP = 0
 _HWND_BOTTOM = 1
 _SWP_NOSIZE = 0x0001
@@ -56,6 +58,7 @@ _SWP_HIDEWINDOW = 0x0080
 _SW_SHOWNA = 8
 _WM_SIZE = 0x0005
 _SIZE_MINIMIZED = 1
+_WM_SHOWWINDOW = 0x0018
 _WM_MOUSEACTIVATE = 0x0021
 _MA_NOACTIVATE = 3
 _WM_WINDOWPOSCHANGING = 0x0046
@@ -178,21 +181,42 @@ def _is_window_above(hwnd_a: int, hwnd_b: int, user32_lib: Any = None, max_steps
     return False
 
 
-def _compute_desktop_insert_after(canvas_hwnd: int, anchor_hwnd: int, user32_lib: Any = None) -> int:
+def _place_above_anchor(
+    canvas_hwnd: int,
+    anchor_hwnd: int,
+    swp_flags: int,
+    user32_lib: Any = None,
+    kernel32_lib: Any = None,
+    max_attempts: int = 64,
+) -> tuple[bool, int, int]:
     """
-    Compute the HWND to pass to SetWindowPos(canvas_hwnd, insert_after, ...)
-    so canvas_hwnd sits immediately ABOVE anchor_hwnd (WorkerW #1 / Progman)
-    while remaining below open application windows.
+    Place canvas_hwnd immediately above anchor_hwnd (WorkerW #1 / Progman), skipping past
+    any UIPI-elevated HWNDs (err=5 ERROR_ACCESS_DENIED) above the anchor until SetWindowPos succeeds.
     """
     u32 = user32_lib or _user32
-    if u32 is None or not anchor_hwnd:
-        return _HWND_BOTTOM
+    k32 = kernel32_lib or _kernel32
+    if u32 is None:
+        return False, 0, 0
+    if not anchor_hwnd:
+        ok = bool(u32.SetWindowPos(canvas_hwnd, _HWND_BOTTOM, 0, 0, 0, 0, swp_flags))
+        err = int(k32.GetLastError()) if k32 is not None else 0
+        return ok, _HWND_BOTTOM, err
+
     prev = u32.GetWindow(anchor_hwnd, _GW_HWNDPREV)
-    steps = 0
-    while prev and int(prev) == int(canvas_hwnd) and steps < 32:
+    attempts = 0
+    last_err = 0
+    while prev and attempts < max_attempts:
+        attempts += 1
+        if int(prev) != int(canvas_hwnd):
+            ok = bool(u32.SetWindowPos(canvas_hwnd, int(prev), 0, 0, 0, 0, swp_flags))
+            last_err = int(k32.GetLastError()) if k32 is not None else 0
+            if ok:
+                return True, int(prev), 0
         prev = u32.GetWindow(prev, _GW_HWNDPREV)
-        steps += 1
-    return int(prev) if prev else _HWND_TOP
+
+    ok = bool(u32.SetWindowPos(canvas_hwnd, _HWND_TOP, 0, 0, 0, 0, swp_flags))
+    err = int(k32.GetLastError()) if k32 is not None else last_err
+    return ok, _HWND_TOP, err
 
 
 class WinDesktopCanvasWindow(QWidget):
@@ -216,10 +240,10 @@ class WinDesktopCanvasWindow(QWidget):
         self.drag = DragController(self.cfg)
         self._edit_mode = False
 
-        # Configure borderless, transparent, non-activating desktop overlay
+        # Configure borderless, transparent, non-activating desktop overlay.
+        # Omit Qt.WindowStaysOnBottomHint so Qt doesn't shove it beneath WorkerW #1 / mpv.
         self.setWindowFlags(
             Qt.FramelessWindowHint |
-            Qt.WindowStaysOnBottomHint |
             Qt.Tool |
             Qt.NoFocus
         )
@@ -263,6 +287,7 @@ class WinDesktopCanvasWindow(QWidget):
         self._rate_limiter = get_rate_limiter()
         self._stopping = False
         self._z_order_guard = False
+        self._temp_topmost_for_desktop = False
         self._win_event_hooks: list[int] = []
         self._win_event_cb = None
         self._z_check_counter = 0
@@ -373,19 +398,26 @@ class WinDesktopCanvasWindow(QWidget):
             try:
                 if self._stopping or self._edit_mode:
                     return
+                cls_name = ""
+                if hwnd and _user32.IsWindow(hwnd):
+                    buf = ctypes.create_unicode_buffer(64)
+                    _user32.GetClassNameW(hwnd, buf, 64)
+                    cls_name = buf.value
+
                 if event == _EVENT_SYSTEM_MINIMIZEEND:
                     # Windows finished restoring (e.g. second Win+D / Show Desktop toggle):
-                    # tuck canvas right back above WorkerW #1 / Progman below restored apps.
-                    QTimer.singleShot(25, lambda: self.lower_to_desktop(force=True))
-                elif event in (_EVENT_SYSTEM_FOREGROUND, _EVENT_SYSTEM_MINIMIZESTART):
-                    cls_name = ""
-                    if hwnd and _user32.IsWindow(hwnd):
-                        buf = ctypes.create_unicode_buffer(64)
-                        _user32.GetClassNameW(hwnd, buf, 64)
-                        cls_name = buf.value
-                    # Recover immediately if desktop/Show-Desktop raised WorkerW or minimized canvas
-                    if event == _EVENT_SYSTEM_MINIMIZESTART or cls_name in ("WorkerW", "Progman", "Shell_TrayWnd"):
+                    # clear any temporary desktop topmost band & re-tuck right above WorkerW #1.
+                    QTimer.singleShot(25, lambda: self.lower_to_desktop(force=True, drop_topmost=True))
+                elif event == _EVENT_SYSTEM_MINIMIZESTART:
+                    # Re-check both immediately and right after Aero minimize animation finishes (~160ms).
+                    QTimer.singleShot(25, lambda: self._ensure_desktop_layer(force=False))
+                    QTimer.singleShot(160, lambda: self._ensure_desktop_layer(force=False))
+                elif event == _EVENT_SYSTEM_FOREGROUND:
+                    if cls_name in ("WorkerW", "Progman", "Shell_TrayWnd", "TrayShowDesktopButtonWClass"):
                         QTimer.singleShot(25, lambda: self._ensure_desktop_layer(force=False))
+                        QTimer.singleShot(160, lambda: self._ensure_desktop_layer(force=False))
+                    elif self._temp_topmost_for_desktop and hwnd != int(self.winId()):
+                        QTimer.singleShot(0, lambda: self.lower_to_desktop(force=True, drop_topmost=True))
             except Exception:
                 pass
 
@@ -411,7 +443,7 @@ class WinDesktopCanvasWindow(QWidget):
         self._win_event_hooks.clear()
         self._win_event_cb = None
 
-    def _ensure_desktop_layer(self, force: bool = False) -> None:
+    def _ensure_desktop_layer(self, force: bool = False, drop_topmost: bool = False) -> None:
         """
         Keep the overlay visible and positioned immediately above WorkerW #1 (SHELLDLL_DefView) /
         Progman so Windows 7 Aero Peek & Show Desktop never bury or minimize the clock while leaving
@@ -433,37 +465,53 @@ class WinDesktopCanvasWindow(QWidget):
                 restored = True
 
             anchor = _find_desktop_anchor_hwnd()
-            if not force and not restored and (not anchor or _is_window_above(hwnd, anchor)):
-                return
+            above_before = bool(anchor and _is_window_above(hwnd, anchor))
 
-            insert_after = _compute_desktop_insert_after(hwnd, anchor) if anchor else _HWND_BOTTOM
-            if (
-                not force
-                and not restored
-                and _user32.GetWindow(anchor, _GW_HWNDPREV) == hwnd
-            ):
+            if drop_topmost and self._temp_topmost_for_desktop:
+                _user32.SetWindowPos(
+                    hwnd, _HWND_NOTOPMOST, 0, 0, 0, 0,
+                    _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
+                )
+                self._temp_topmost_for_desktop = False
+
+            if not force and not restored and (not anchor or above_before):
                 return
 
             swp_flags = _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE
             if restored:
                 swp_flags |= _SWP_SHOWWINDOW
-            ok = _user32.SetWindowPos(
-                hwnd, insert_after, 0, 0, self.width, self.height, swp_flags,
-            )
-            err = _kernel32.GetLastError() if _kernel32 is not None else 0
-            if force or restored:
-                log.info(
-                    "lower_to_desktop(hwnd=0x%X, anchor=0x%X, insert_after=0x%X, restored=%s): ok=%s err=%d",
-                    hwnd, anchor, insert_after, restored, bool(ok), err,
-                )
+
+            ok, used_after, err = _place_above_anchor(hwnd, anchor, swp_flags)
+            above_after = bool(anchor and _is_window_above(hwnd, anchor))
+
+            # If Show Desktop elevated WorkerW #1 into the topmost band so _HWND_TOP couldn't clear it,
+            # temporarily promote canvas to _HWND_TOPMOST (still below taskbar/popups until apps return).
+            if anchor and not above_after:
+                ok_tm = bool(_user32.SetWindowPos(hwnd, _HWND_TOPMOST, 0, 0, 0, 0, swp_flags))
+                if ok_tm:
+                    self._temp_topmost_for_desktop = True
+                    used_after = _HWND_TOPMOST
+                    ok = True
+                    err = 0
+                    above_after = _is_window_above(hwnd, anchor)
+
+            if force or restored or not above_before or not ok:
+                allowed, _sup = self._rate_limiter.check("canvas:zorder", interval=1.0)
+                if force or restored or allowed:
+                    log.info(
+                        "lower_to_desktop(hwnd=0x%X, anchor=0x%X, after=0x%X, restored=%s, "
+                        "above=%s->%s, topmost=%s): ok=%s err=%d",
+                        hwnd, anchor, used_after, restored, above_before, above_after,
+                        self._temp_topmost_for_desktop, ok, err,
+                    )
         except Exception as exc:
             log.warning("lower_to_desktop exception: %s", exc, exc_info=True)
         finally:
             self._z_order_guard = False
 
-    def lower_to_desktop(self, force: bool = True) -> None:
+    def lower_to_desktop(self, force: bool = True, drop_topmost: bool = False) -> None:
         """Position the canvas window at the desktop layer immediately above WorkerW/Progman."""
-        self._ensure_desktop_layer(force=force)
+        self._ensure_desktop_layer(force=force, drop_topmost=drop_topmost)
 
     def toggle_edit_mode(self) -> bool:
         self._edit_mode = not self._edit_mode
@@ -765,7 +813,7 @@ class WinDesktopCanvasWindow(QWidget):
             sys.platform == "win32"
             and _WINDOWPOS is not None
             and not self._stopping
-            and eventType == b"windows_generic_MSG"
+            and eventType in (b"windows_generic_MSG", "windows_generic_MSG")
         ):
             try:
                 msg = wintypes.MSG.from_address(int(message))
@@ -775,6 +823,9 @@ class WinDesktopCanvasWindow(QWidget):
                     if msg.message == _WM_MOUSEACTIVATE:
                         return True, _MA_NOACTIVATE
                 if msg.message == _WM_SYSCOMMAND and (msg.wParam & 0xFFF0) == _SC_MINIMIZE:
+                    return True, 0
+                if msg.message == _WM_SHOWWINDOW and not msg.wParam:
+                    QTimer.singleShot(0, lambda: self._ensure_desktop_layer(force=True))
                     return True, 0
                 if msg.message == _WM_WINDOWPOSCHANGING and msg.lParam:
                     wp = _WINDOWPOS.from_address(int(msg.lParam))
