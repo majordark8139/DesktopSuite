@@ -33,6 +33,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Checkout Windows 7 mpv Binary Archive
+        uses: actions/checkout@v4
+        with:
+          ref: binaries
+          path: mpv-bundle
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,53 +50,14 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pillow
 
-      - name: Cache mpv Windows 7 Build
-        id: cache-mpv
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}\mpv-win7.7z
-          key: mpv-win7-x86_64-20230827-git-83c0e98
-
-      - name: Download & Install Windows 7 Native mpv Build
+      - name: Extract Windows 7 Native mpv Build
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path "assets\bin"
-          $archivePath = "$env:RUNNER_TEMP\mpv-win7.7z"
-          $minSize = 10000000
-          # Direct CDN mirror URLs bypass SourceForge HTML redirect page (viasf=1 forces direct binary serve)
-          $mirrors = @(
-            "https://altushost-swe.dl.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z?viasf=1",
-            "https://nchc.dl.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z?viasf=1",
-            "https://phoenixnap.dl.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z?viasf=1",
-            "https://netcologne.dl.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z?viasf=1",
-            "https://master.dl.sourceforge.net/project/mpv-player-windows/64bit/mpv-x86_64-20230827-git-83c0e98.7z?viasf=1"
-          )
-          $cached = (Test-Path $archivePath) -and ((Get-Item $archivePath).Length -ge $minSize)
-          if ($cached) {
-            Write-Host "Using cached mpv archive ($([math]::Round((Get-Item $archivePath).Length/1MB,1)) MB)"
-          } else {
-            $downloaded = $false
-            foreach ($url in $mirrors) {
-              Write-Host "Trying mirror: $url"
-              try {
-                curl.exe --retry 3 --retry-delay 5 --max-time 120 -L $url -o $archivePath
-              } catch {}
-              if ((Test-Path $archivePath) -and ((Get-Item $archivePath).Length -ge $minSize)) {
-                Write-Host "Downloaded successfully from: $url ($([math]::Round((Get-Item $archivePath).Length/1MB,1)) MB)"
-                $downloaded = $true
-                break
-              }
-              Write-Warning "Mirror failed or file too small, trying next..."
-              if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
-            }
-            if (-not $downloaded) {
-              throw "All mpv mirrors failed — cannot build portable package."
-            }
-          }
-          Write-Host "Extracting Windows 7 mpv into assets\bin..."
-          7z x $archivePath -o"assets\bin" -y
+          Write-Host "Extracting Windows 7 mpv from repo bundle..."
+          7z x "mpv-bundle\mpv-x86_64-20230827-git-83c0e98.7z" -o"assets\bin" -y
           if (Test-Path "assets\bin\mpv.exe") {
-            Write-Host "Successfully installed Windows 7 compatible mpv.exe"
+            Write-Host "Successfully installed Windows 7 compatible mpv.exe into assets\bin"
             Get-ChildItem "assets\bin" | Select-Object Name, Length
           } else {
             throw "assets\bin\mpv.exe was not found after extraction!"
