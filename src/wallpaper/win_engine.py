@@ -62,6 +62,8 @@ WS_CLIPCHILDREN = 0x02000000
 WS_POPUP = 0x80000000
 WS_CAPTION = 0x00C00000
 WS_THICKFRAME = 0x00040000
+WS_MAXIMIZEBOX = 0x00010000
+WS_MINIMIZEBOX = 0x00020000
 
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_APPWINDOW = 0x00040000
@@ -445,6 +447,9 @@ class WinAutoPauseWatcher:
                 else:
                     if cls_name in (
                         "Progman", "WorkerW", "Shell_TrayWnd",
+                        "TaskListThumbnailWnd", "NotifyIconOverflowWindow",
+                        "DV2ControlHost", "TaskSwitcherWnd",
+                        "Qt5152QWindowToolSaveBits",
                         "DesktopCanvasWindow", "DesktopSuiteWin7MpvHost", "mpv",
                     ):
                         should_pause = False
@@ -503,6 +508,7 @@ class WinWallpaperEngine:
         self.ipc_pipe_path: Optional[str] = None
         self.last_error_message: str = ""
         self.log_path = str(get_log_dir() / "mpv_latest.log")
+        self.stderr_log_path = str(get_log_dir() / "mpv_stderr_latest.log")
         atexit.register(self.stop)
 
     # -----------------------------------------------------------------------
@@ -649,7 +655,8 @@ class WinWallpaperEngine:
                 user32.SetWindowLongPtrW(target_workerw, GWL_STYLE, new_style)
 
             # Win7 Explorer sets WS_EX_LAYERED | WS_EX_TRANSPARENT on WorkerW #2 for fade transitions;
-            # strip both so child video windows aren't composited at 0 alpha or click/paint-transparent.
+            # strip WS_EX_LAYERED so children aren't hidden at 0 alpha, while keeping WS_EX_TRANSPARENT
+            # so WorkerW #2 remains completely transparent to mouse/taskbar hit-testing.
             exstyle = user32.GetWindowLongPtrW(target_workerw, GWL_EXSTYLE)
             if exstyle & WS_EX_LAYERED:
                 cr_key = wintypes.COLORREF(0)
@@ -663,7 +670,7 @@ class WinWallpaperEngine:
                     bool(lwa_ok), cr_key.value, b_alpha.value, dw_flags.value,
                 )
 
-            desired_exstyle = (exstyle & ~(WS_EX_LAYERED | WS_EX_TRANSPARENT)) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+            desired_exstyle = (exstyle & ~WS_EX_LAYERED) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT
             if desired_exstyle != exstyle:
                 self._worker_orig_exstyle = exstyle
                 user32.SetWindowLongPtrW(target_workerw, GWL_EXSTYLE, desired_exstyle)
@@ -741,6 +748,40 @@ class WinWallpaperEngine:
             return True
         return False
 
+    _GPU_COMMON_FLAGS = [
+        "--vo=gpu",
+        "--hwdec-codecs=all",
+        "--scale=bilinear",
+        "--cscale=bilinear",
+        "--dscale=bilinear",
+        "--correct-downscaling=no",
+        "--linear-downscaling=no",
+        "--deband=no",
+        "--dither-depth=no",
+    ]
+    _GPU_BACKEND_FLAGS = {
+        "gpu-d3d11": [
+            "--gpu-api=d3d11",
+            "--gpu-context=d3d11",
+            "--d3d11-flip=no",          # Mandatory on Windows 7 DXGI 1.2
+            "--d3d11-sync-interval=1",
+            "--hwdec=auto",             # Tries d3d11va / d3d11va-copy / dxva2-copy cleanly on Win7
+            *_GPU_COMMON_FLAGS,
+        ],
+        "gpu-angle": [
+            "--gpu-api=opengl",
+            "--gpu-context=angle",
+            "--hwdec=auto",             # Tries dxva2 zero-copy / dxva2-copy via ANGLE D3D
+            *_GPU_COMMON_FLAGS,
+        ],
+        "gpu-gl-win": [
+            "--gpu-api=opengl",
+            "--gpu-context=win",
+            "--hwdec=auto",             # Tries dxva2 (WGL DX interop) / dxva2-copy
+            *_GPU_COMMON_FLAGS,
+        ],
+    }
+
     def _build_cmd(
         self,
         mpv_bin: str,
@@ -755,40 +796,9 @@ class WinWallpaperEngine:
         screen_w: int = 0,
         screen_h: int = 0,
     ) -> list[str]:
-        if backend == "gpu-d3d11":
-            # True zero-copy D3D11VA hardware decode + GPU shader scaling (matches Linux VA-API)
-            vo_flags = [
-                "--vo=gpu",
-                "--gpu-context=d3d11",
-                "--d3d11-flip=no",          # Mandatory on Windows 7 DXGI 1.2
-                "--d3d11-sync-interval=1",
-                "--hwdec=d3d11va",
-                "--hwdec-codecs=all",
-                "--profile=fast",
-                "--scale=bilinear",
-                "--cscale=bilinear",
-                "--dscale=bilinear",
-                "--correct-downscaling=no",
-                "--linear-downscaling=no",
-                "--deband=no",
-                "--dither-depth=no",
-            ]
-        elif backend == "gpu-gl-win":
-            # OpenGL + WGL_NV_DX_interop zero-copy DXVA2 hardware decode (universal Win7 Intel fallback)
-            vo_flags = [
-                "--vo=gpu",
-                "--gpu-context=win",
-                "--hwdec=dxva2",
-                "--hwdec-codecs=all",
-                "--profile=fast",
-                "--scale=bilinear",
-                "--cscale=bilinear",
-                "--dscale=bilinear",
-                "--correct-downscaling=no",
-                "--linear-downscaling=no",
-                "--deband=no",
-                "--dither-depth=no",
-            ]
+        if backend in self._GPU_BACKEND_FLAGS:
+            vo_flags = list(self._GPU_BACKEND_FLAGS[backend])
+            msg_level = "all=v"  # Capture full GPU context / hwdec init diagnostics cleanly
         else:
             # Proven Direct3D 9Ex + dxva2-copy safety net
             vo_flags = [
@@ -796,6 +806,7 @@ class WinWallpaperEngine:
                 "--hwdec=dxva2-copy",
                 "--sws-scaler=fast-bilinear",
             ]
+            msg_level = "all=warn,vo=v,hwdec=v"
 
         cmd = [
             mpv_bin,
@@ -815,12 +826,14 @@ class WinWallpaperEngine:
             "--no-window-dragging",
             "--no-input-default-bindings",
             "--no-input-cursor",
+            "--cursor-autohide=no",
+            "--input-media-keys=no",
             "--keep-open=yes",
             f"--speed={speed:.2f}",
             f"--volume={volume}",
             f"--input-ipc-server={self.ipc_pipe_path}",
             f"--log-file={self.log_path}",
-            "--msg-level=all=warn,vo=v,hwdec=v",
+            f"--msg-level={msg_level}",
         ]
         if screen_w > 0 and screen_h > 0:
             cmd.append(f"--geometry={screen_w}x{screen_h}+0+0")
@@ -887,7 +900,7 @@ class WinWallpaperEngine:
             workerw_target, rect.right - rect.left, rect.bottom - rect.top, sys_w, sys_h, screen_w, screen_h,
         )
 
-        backends = ["gpu-d3d11", "gpu-gl-win", "direct3d"]
+        backends = ["gpu-d3d11", "gpu-angle", "gpu-gl-win", "direct3d"]
 
         for backend in backends:
             unique_id = uuid.uuid4().hex[:8]
@@ -902,17 +915,28 @@ class WinWallpaperEngine:
             )
             log.info("Spawning mpv backend=%s: %s", backend, cmd)
 
+            err_fh = None
             try:
+                try:
+                    err_fh = open(self.stderr_log_path, "wb")
+                except OSError:
+                    err_fh = None
                 self._proc = subprocess.Popen(
                     cmd,
                     creationflags=0x08000000,  # CREATE_NO_WINDOW
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=err_fh if err_fh is not None else subprocess.DEVNULL,
+                    stderr=err_fh if err_fh is not None else subprocess.DEVNULL,
                 )
             except Exception as exc:
                 log.exception("Failed to spawn mpv process (backend=%s): %s", backend, exc)
                 continue
+            finally:
+                if err_fh is not None:
+                    try:
+                        err_fh.close()
+                    except Exception:
+                        pass
 
             log.info("Spawned mpv PID=%d (backend=%s, title=%r)", self._proc.pid, backend, mpv_title)
 
@@ -940,7 +964,7 @@ class WinWallpaperEngine:
                     user32.ShowWindow(mpv_hwnd, SW_HIDE)
                     _delete_taskbar_tab(mpv_hwnd)
 
-                    # For zero-copy --vo=gpu backends, ensure swapchain/GL context & HW decoder
+                    # For zero-copy/shader --vo=gpu backends, ensure swapchain/GL context & HW decoder
                     # initialize cleanly in-process before reparenting into WorkerW #2.
                     if backend.startswith("gpu-"):
                         vo_ok = False
@@ -948,7 +972,7 @@ class WinWallpaperEngine:
                         hw_cur = None
                         vo_ready_at = None
                         verify_start = time.time()
-                        while time.time() - verify_start < 1.5 and self._proc.poll() is None:
+                        while time.time() - verify_start < 1.8 and self._proc.poll() is None:
                             res_vo = self._ipc.send_command(["get_property", "vo-configured"])
                             res_cvo = self._ipc.send_command(["get_property", "current-vo"])
                             res_hw = self._ipc.send_command(["get_property", "hwdec-current"])
@@ -958,7 +982,9 @@ class WinWallpaperEngine:
                             if vo_ok:
                                 if vo_ready_at is None:
                                     vo_ready_at = time.time()
-                                if hw_cur or (time.time() - vo_ready_at >= 0.25):
+                                if (hw_cur and str(hw_cur).lower() not in ("no", "none")) or (
+                                    time.time() - vo_ready_at >= 0.75
+                                ):
                                     break
                             time.sleep(0.025)
 
@@ -966,11 +992,16 @@ class WinWallpaperEngine:
                             "Pre-reparent GPU verify (%s in %.2fs): vo-configured=%s current-vo=%r hwdec-current=%r",
                             backend, time.time() - verify_start, vo_ok, cur_vo, hw_cur,
                         )
-                        if not vo_ok or not hw_cur:
+                        hw_active = bool(hw_cur) and str(hw_cur).lower() not in ("no", "none")
+                        if not vo_ok or not hw_active:
                             log.warning(
-                                "Backend %s did not activate zero-copy GPU hwdec (vo=%s, hwdec=%r); trying next backend",
+                                "Backend %s did not activate HW-accelerated gpu VO (vo=%s, hwdec=%r); trying next backend",
                                 backend, vo_ok, hw_cur,
                             )
+                            stderr_tail = read_log_tail(self.stderr_log_path, max_lines=40)
+                            mpv_tail = read_log_tail(self.log_path, max_lines=50)
+                            log.warning("mpv stderr (%s) after %s:\n%s", self.stderr_log_path, backend, stderr_tail)
+                            log.warning("mpv log tail (%s) after %s:\n%s", self.log_path, backend, mpv_tail)
                             try:
                                 self._ipc.send_command(["quit"])
                                 self._proc.wait(timeout=0.3)
@@ -981,22 +1012,12 @@ class WinWallpaperEngine:
                                     pass
                             self._proc = None
                             continue
+                        # Reduce runtime verbosity once GPU pipeline is confirmed healthy
+                        self._ipc.send_command(["set_property", "msg-level", "all=warn,vo=v,hwdec=v"])
 
-                    # 1. Adjust window style: strip popup/caption/thickframe/visible until child-reparented
-                    old_style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)
-                    new_style = (
-                        (old_style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_VISIBLE))
-                        | WS_CHILD
-                        | WS_CLIPSIBLINGS
+                    old_style, new_style, err_style, old_exstyle, new_exstyle, err_exstyle = (
+                        self._apply_mpv_child_styles(mpv_hwnd, strip_visible=True)
                     )
-                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_STYLE, new_style)
-                    err_style = kernel32.GetLastError()
-
-                    # 2. Adjust extended style: strip WS_EX_APPWINDOW, add WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-                    old_exstyle = user32.GetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE)
-                    new_exstyle = (old_exstyle & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-                    user32.SetWindowLongPtrW(mpv_hwnd, GWL_EXSTYLE, new_exstyle)
-                    err_exstyle = kernel32.GetLastError()
 
                     # 3. Reparent into WorkerW #2 while still hidden
                     prev_parent = user32.SetParent(mpv_hwnd, workerw_target)
@@ -1057,7 +1078,9 @@ class WinWallpaperEngine:
             self._proc = None
             self._destroy_mpv_window()
 
-            mpv_tail = read_log_tail(self.log_path, max_lines=35)
+            stderr_tail = read_log_tail(self.stderr_log_path, max_lines=40)
+            mpv_tail = read_log_tail(self.log_path, max_lines=50)
+            log.warning("mpv stderr (%s) after backend=%s failure:\n%s", self.stderr_log_path, backend, stderr_tail)
             log.warning("mpv tail (%s) after backend=%s failure:\n%s", self.log_path, backend, mpv_tail)
 
             if rc is not None:
@@ -1075,6 +1098,33 @@ class WinWallpaperEngine:
         log.error(self.last_error_message)
         self.stop(restore_wallpaper=True)
         return False
+
+    @staticmethod
+    def _apply_mpv_child_styles(
+        hwnd: int, strip_visible: bool = False
+    ) -> tuple[int, int, int, int, int, int]:
+        """Strip popup/frame/appwindow styles and enforce click/hover-transparent child styles."""
+        old_style = user32.GetWindowLongPtrW(hwnd, GWL_STYLE)
+        strip_mask = WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+        if strip_visible:
+            strip_mask |= WS_VISIBLE
+        new_style = (old_style & ~strip_mask) | WS_CHILD | WS_CLIPSIBLINGS
+        if new_style != old_style:
+            user32.SetWindowLongPtrW(hwnd, GWL_STYLE, new_style)
+        err_style = kernel32.GetLastError()
+
+        old_exstyle = user32.GetWindowLongPtrW(hwnd, GWL_EXSTYLE)
+        new_exstyle = (
+            (old_exstyle & ~WS_EX_APPWINDOW)
+            | WS_EX_TOOLWINDOW
+            | WS_EX_NOACTIVATE
+            | WS_EX_TRANSPARENT
+            | WS_EX_NOPARENTNOTIFY
+        )
+        if new_exstyle != old_exstyle:
+            user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_exstyle)
+        err_exstyle = kernel32.GetLastError()
+        return old_style, new_style, err_style, old_exstyle, new_exstyle, err_exstyle
 
     def _scrub_mpv_taskbar_windows(
         self,
@@ -1110,12 +1160,7 @@ class WinWallpaperEngine:
                 f"st=0x{st & 0xFFFFFFFF:08X},ex=0x{ex & 0xFFFFFFFF:08X})"
             )
             if hwnd == main_hwnd:
-                fixed_st = (st & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME)) | WS_CHILD | WS_CLIPSIBLINGS
-                fixed_ex = (ex & ~WS_EX_APPWINDOW) | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
-                if fixed_st != st:
-                    user32.SetWindowLongPtrW(hwnd, GWL_STYLE, fixed_st)
-                if fixed_ex != ex:
-                    user32.SetWindowLongPtrW(hwnd, GWL_EXSTYLE, fixed_ex)
+                self._apply_mpv_child_styles(hwnd, strip_visible=False)
                 if par != workerw_target:
                     user32.SetParent(hwnd, workerw_target)
                     user32.SetWindowPos(

@@ -12,8 +12,10 @@ repositioning when edit mode is unlocked.
 from __future__ import annotations
 
 import ctypes
+from ctypes import wintypes
 import logging
 import math
+import sys
 import time
 from typing import Any, Optional
 
@@ -31,6 +33,166 @@ log = logging.getLogger(__name__)
 
 
 _SECOND_PRECISION_THEMES = frozenset({"Circular Orbit", "Matrix CLI"})
+
+_GWL_EXSTYLE = -20
+_GW_HWNDNEXT = 2
+_GW_HWNDPREV = 3
+
+_WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_LAYERED = 0x00080000
+_WS_EX_NOACTIVATE = 0x08000000
+
+_HWND_TOP = 0
+_HWND_BOTTOM = 1
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
+_SWP_FRAMECHANGED = 0x0020
+_SWP_SHOWWINDOW = 0x0040
+_SWP_HIDEWINDOW = 0x0080
+
+_SW_SHOWNA = 8
+_WM_SIZE = 0x0005
+_SIZE_MINIMIZED = 1
+_WM_MOUSEACTIVATE = 0x0021
+_MA_NOACTIVATE = 3
+_WM_WINDOWPOSCHANGING = 0x0046
+_WM_WINDOWPOSCHANGED = 0x0047
+_WM_NCHITTEST = 0x0084
+_HTTRANSPARENT = -1
+_WM_SYSCOMMAND = 0x0112
+_SC_MINIMIZE = 0xF020
+
+_DWMWA_FLIP3D_POLICY = 8
+_DWMFLIP3D_EXCLUDEBELOW = 1
+_DWMWA_EXCLUDED_FROM_PEEK = 12
+
+_WINEVENT_OUTOFCONTEXT = 0x0000
+_EVENT_SYSTEM_FOREGROUND = 0x0003
+_EVENT_SYSTEM_MINIMIZESTART = 0x0016
+_EVENT_SYSTEM_MINIMIZEEND = 0x0017
+
+if sys.platform == "win32":
+    _user32 = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
+    try:
+        _dwmapi = ctypes.windll.dwmapi
+    except Exception:
+        _dwmapi = None
+
+    class _WINDOWPOS(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND),
+            ("hwndInsertAfter", wintypes.HWND),
+            ("x", ctypes.c_int),
+            ("y", ctypes.c_int),
+            ("cx", ctypes.c_int),
+            ("cy", ctypes.c_int),
+            ("flags", wintypes.UINT),
+        ]
+
+    _WINEVENTPROC = ctypes.WINFUNCTYPE(
+        None,
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.HWND,
+        wintypes.LONG,
+        wintypes.LONG,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+
+    _user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+    _user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    _user32.FindWindowW.restype = wintypes.HWND
+    _user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+    _user32.FindWindowExW.restype = wintypes.HWND
+    _user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+    _user32.GetWindow.restype = wintypes.HWND
+    _user32.IsWindow.argtypes = [wintypes.HWND]
+    _user32.IsWindow.restype = wintypes.BOOL
+    _user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    _user32.IsWindowVisible.restype = wintypes.BOOL
+    _user32.IsIconic.argtypes = [wintypes.HWND]
+    _user32.IsIconic.restype = wintypes.BOOL
+    _user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    _user32.ShowWindow.restype = wintypes.BOOL
+    _user32.SetWindowPos.argtypes = [
+        wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT
+    ]
+    _user32.SetWindowPos.restype = wintypes.BOOL
+    _user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    _user32.GetClassNameW.restype = ctypes.c_int
+    _user32.SetWinEventHook.argtypes = [
+        wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, _WINEVENTPROC,
+        wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+    ]
+    _user32.SetWinEventHook.restype = wintypes.HANDLE
+    _user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+    _user32.UnhookWinEvent.restype = wintypes.BOOL
+
+    if _dwmapi is not None:
+        _dwmapi.DwmSetWindowAttribute.argtypes = [
+            wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD
+        ]
+        _dwmapi.DwmSetWindowAttribute.restype = ctypes.c_long
+else:
+    _user32 = None
+    _kernel32 = None
+    _dwmapi = None
+    _WINDOWPOS = None
+    _WINEVENTPROC = None
+
+
+def _find_desktop_anchor_hwnd(user32_lib: Any = None) -> int:
+    """Return WorkerW hosting SHELLDLL_DefView on Windows, falling back to Progman."""
+    u32 = user32_lib or _user32
+    if u32 is None:
+        return 0
+    cur = u32.FindWindowExW(0, 0, "WorkerW", None)
+    while cur:
+        if u32.FindWindowExW(cur, 0, "SHELLDLL_DefView", None):
+            return int(cur)
+        cur = u32.FindWindowExW(0, cur, "WorkerW", None)
+    progman = u32.FindWindowW("Progman", None)
+    return int(progman or 0)
+
+
+def _is_window_above(hwnd_a: int, hwnd_b: int, user32_lib: Any = None, max_steps: int = 512) -> bool:
+    """Return True if top-level hwnd_a sits strictly above hwnd_b in the Win32 Z-order."""
+    u32 = user32_lib or _user32
+    if u32 is None or not hwnd_a or not hwnd_b or hwnd_a == hwnd_b:
+        return False
+    cur = u32.GetWindow(hwnd_a, _GW_HWNDNEXT)
+    steps = 0
+    while cur and steps < max_steps:
+        if int(cur) == int(hwnd_b):
+            return True
+        cur = u32.GetWindow(cur, _GW_HWNDNEXT)
+        steps += 1
+    return False
+
+
+def _compute_desktop_insert_after(canvas_hwnd: int, anchor_hwnd: int, user32_lib: Any = None) -> int:
+    """
+    Compute the HWND to pass to SetWindowPos(canvas_hwnd, insert_after, ...)
+    so canvas_hwnd sits immediately ABOVE anchor_hwnd (WorkerW #1 / Progman)
+    while remaining below open application windows.
+    """
+    u32 = user32_lib or _user32
+    if u32 is None or not anchor_hwnd:
+        return _HWND_BOTTOM
+    prev = u32.GetWindow(anchor_hwnd, _GW_HWNDPREV)
+    steps = 0
+    while prev and int(prev) == int(canvas_hwnd) and steps < 32:
+        prev = u32.GetWindow(prev, _GW_HWNDPREV)
+        steps += 1
+    return int(prev) if prev else _HWND_TOP
 
 
 class WinDesktopCanvasWindow(QWidget):
@@ -100,6 +262,10 @@ class WinDesktopCanvasWindow(QWidget):
         self._last_canvas_hb = time.monotonic()
         self._rate_limiter = get_rate_limiter()
         self._stopping = False
+        self._z_order_guard = False
+        self._win_event_hooks: list[int] = []
+        self._win_event_cb = None
+        self._z_check_counter = 0
 
         # 25 FPS smart animation tick (smooth bars, skips repaints when idle & silent)
         self._timer = QTimer(self)
@@ -114,7 +280,9 @@ class WinDesktopCanvasWindow(QWidget):
     def start(self) -> None:
         log.info("WinDesktopCanvasWindow.start()")
         self.show()
-        self.lower_to_desktop()
+        self._configure_native_window_attrs()
+        self._install_win_event_hooks()
+        self.lower_to_desktop(force=True)
 
     def stop(self) -> None:
         if self._stopping:
@@ -124,6 +292,7 @@ class WinDesktopCanvasWindow(QWidget):
             "WinDesktopCanvasWindow.stop() after %d paints (%d ticks, %d static rebuilds)",
             self._paint_count, self._tick_count, self._static_rebuilds,
         )
+        self._uninstall_win_event_hooks()
         try:
             self._timer.stop()
         except Exception:
@@ -159,17 +328,142 @@ class WinDesktopCanvasWindow(QWidget):
         self._force_full_repaint = True
         self.update()
 
-    def lower_to_desktop(self) -> None:
-        """Position the canvas window at the desktop layer below application windows."""
+    def _configure_native_window_attrs(self) -> None:
+        """Apply Windows 7 DWM Aero Peek exclusion and non-activating click-through ex-styles."""
+        if sys.platform != "win32" or _user32 is None or self._stopping:
+            return
         try:
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
             hwnd = int(self.winId())
-            # HWND_BOTTOM = 1, SWP_NOMOVE = 2, SWP_NOSIZE = 1, SWP_NOACTIVATE = 0x0010
-            ok = user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0013)
-            log.info("lower_to_desktop(hwnd=0x%X): ok=%s err=%d", hwnd, bool(ok), kernel32.GetLastError())
+            if not hwnd or not _user32.IsWindow(hwnd):
+                return
+
+            if _dwmapi is not None:
+                excl = ctypes.c_int(1)
+                _dwmapi.DwmSetWindowAttribute(
+                    hwnd, _DWMWA_EXCLUDED_FROM_PEEK, ctypes.byref(excl), ctypes.sizeof(excl)
+                )
+                flip_policy = ctypes.c_int(_DWMFLIP3D_EXCLUDEBELOW)
+                _dwmapi.DwmSetWindowAttribute(
+                    hwnd, _DWMWA_FLIP3D_POLICY, ctypes.byref(flip_policy), ctypes.sizeof(flip_policy)
+                )
+
+            exstyle = _user32.GetWindowLongPtrW(hwnd, _GWL_EXSTYLE)
+            if self._edit_mode:
+                desired = (exstyle & ~(_WS_EX_NOACTIVATE | _WS_EX_TRANSPARENT)) | _WS_EX_TOOLWINDOW | _WS_EX_LAYERED
+            else:
+                desired = exstyle | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE | _WS_EX_TRANSPARENT | _WS_EX_LAYERED
+            if desired != exstyle:
+                _user32.SetWindowLongPtrW(hwnd, _GWL_EXSTYLE, desired)
+                _user32.SetWindowPos(
+                    hwnd, 0, 0, 0, 0, 0,
+                    _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED,
+                )
+        except Exception as exc:
+            log.debug("_configure_native_window_attrs error: %s", exc)
+
+    def _install_win_event_hooks(self) -> None:
+        """Hook Windows foreground & minimize/Show-Desktop transitions with zero polling cost."""
+        if sys.platform != "win32" or _user32 is None or _WINEVENTPROC is None:
+            return
+        if self._win_event_hooks:
+            return
+
+        @_WINEVENTPROC
+        def _on_win_event(_hook, event, hwnd, _id_obj, _id_child, _thread, _time_ms):
+            try:
+                if self._stopping or self._edit_mode:
+                    return
+                if event == _EVENT_SYSTEM_MINIMIZEEND:
+                    # Windows finished restoring (e.g. second Win+D / Show Desktop toggle):
+                    # tuck canvas right back above WorkerW #1 / Progman below restored apps.
+                    QTimer.singleShot(25, lambda: self.lower_to_desktop(force=True))
+                elif event in (_EVENT_SYSTEM_FOREGROUND, _EVENT_SYSTEM_MINIMIZESTART):
+                    cls_name = ""
+                    if hwnd and _user32.IsWindow(hwnd):
+                        buf = ctypes.create_unicode_buffer(64)
+                        _user32.GetClassNameW(hwnd, buf, 64)
+                        cls_name = buf.value
+                    # Recover immediately if desktop/Show-Desktop raised WorkerW or minimized canvas
+                    if event == _EVENT_SYSTEM_MINIMIZESTART or cls_name in ("WorkerW", "Progman", "Shell_TrayWnd"):
+                        QTimer.singleShot(25, lambda: self._ensure_desktop_layer(force=False))
+            except Exception:
+                pass
+
+        self._win_event_cb = _on_win_event
+        for ev_min, ev_max in (
+            (_EVENT_SYSTEM_FOREGROUND, _EVENT_SYSTEM_FOREGROUND),
+            (_EVENT_SYSTEM_MINIMIZESTART, _EVENT_SYSTEM_MINIMIZEEND),
+        ):
+            hook = _user32.SetWinEventHook(
+                ev_min, ev_max, 0, self._win_event_cb, 0, 0, _WINEVENT_OUTOFCONTEXT
+            )
+            if hook:
+                self._win_event_hooks.append(int(hook))
+        log.debug("Installed %d WinEvent hooks for Show Desktop resilience", len(self._win_event_hooks))
+
+    def _uninstall_win_event_hooks(self) -> None:
+        if sys.platform == "win32" and _user32 is not None:
+            for hook in self._win_event_hooks:
+                try:
+                    _user32.UnhookWinEvent(hook)
+                except Exception:
+                    pass
+        self._win_event_hooks.clear()
+        self._win_event_cb = None
+
+    def _ensure_desktop_layer(self, force: bool = False) -> None:
+        """
+        Keep the overlay visible and positioned immediately above WorkerW #1 (SHELLDLL_DefView) /
+        Progman so Windows 7 Aero Peek & Show Desktop never bury or minimize the clock while leaving
+        open application windows in front of the overlay.
+        """
+        if sys.platform != "win32" or _user32 is None or self._stopping or self._z_order_guard:
+            return
+        if self._edit_mode and not force:
+            return
+        self._z_order_guard = True
+        try:
+            hwnd = int(self.winId())
+            if not hwnd or not _user32.IsWindow(hwnd):
+                return
+
+            restored = False
+            if _user32.IsIconic(hwnd) or not _user32.IsWindowVisible(hwnd):
+                _user32.ShowWindow(hwnd, _SW_SHOWNA)
+                restored = True
+
+            anchor = _find_desktop_anchor_hwnd()
+            if not force and not restored and (not anchor or _is_window_above(hwnd, anchor)):
+                return
+
+            insert_after = _compute_desktop_insert_after(hwnd, anchor) if anchor else _HWND_BOTTOM
+            if (
+                not force
+                and not restored
+                and _user32.GetWindow(anchor, _GW_HWNDPREV) == hwnd
+            ):
+                return
+
+            swp_flags = _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE
+            if restored:
+                swp_flags |= _SWP_SHOWWINDOW
+            ok = _user32.SetWindowPos(
+                hwnd, insert_after, 0, 0, self.width, self.height, swp_flags,
+            )
+            err = _kernel32.GetLastError() if _kernel32 is not None else 0
+            if force or restored:
+                log.info(
+                    "lower_to_desktop(hwnd=0x%X, anchor=0x%X, insert_after=0x%X, restored=%s): ok=%s err=%d",
+                    hwnd, anchor, insert_after, restored, bool(ok), err,
+                )
         except Exception as exc:
             log.warning("lower_to_desktop exception: %s", exc, exc_info=True)
+        finally:
+            self._z_order_guard = False
+
+    def lower_to_desktop(self, force: bool = True) -> None:
+        """Position the canvas window at the desktop layer immediately above WorkerW/Progman."""
+        self._ensure_desktop_layer(force=force)
 
     def toggle_edit_mode(self) -> bool:
         self._edit_mode = not self._edit_mode
@@ -177,13 +471,14 @@ class WinDesktopCanvasWindow(QWidget):
 
         # In edit mode, allow mouse events; in normal mode, pass-through
         self.setAttribute(Qt.WA_TransparentForMouseEvents, not self._edit_mode)
+        self._configure_native_window_attrs()
 
         if self._edit_mode:
             # Raise temporarily so user can easily interact with anchor boxes
             self.raise_()
             self.activateWindow()
         else:
-            self.lower_to_desktop()
+            self.lower_to_desktop(force=True)
 
         self._static_key = None
         self._force_full_repaint = True
@@ -321,6 +616,11 @@ class WinDesktopCanvasWindow(QWidget):
         if self._stopping:
             return
         self._tick_count += 1
+        self._z_check_counter += 1
+        if self._z_check_counter >= 10:
+            self._z_check_counter = 0
+            if not self._edit_mode:
+                self._ensure_desktop_layer(force=False)
 
         now_sec = int(time.time())
         if now_sec != self._last_sec:
@@ -455,3 +755,43 @@ class WinDesktopCanvasWindow(QWidget):
         if self._edit_mode:
             self.drag.on_release(None, None)
             self.update()
+
+    def nativeEvent(self, eventType, message):
+        """
+        Defend against Show Desktop minimizing/hiding/lowering the desktop HUD overlay
+        and keep mouse/hit-test/activation completely transparent outside edit mode.
+        """
+        if (
+            sys.platform == "win32"
+            and _WINDOWPOS is not None
+            and not self._stopping
+            and eventType == b"windows_generic_MSG"
+        ):
+            try:
+                msg = wintypes.MSG.from_address(int(message))
+                if not self._edit_mode:
+                    if msg.message == _WM_NCHITTEST:
+                        return True, _HTTRANSPARENT
+                    if msg.message == _WM_MOUSEACTIVATE:
+                        return True, _MA_NOACTIVATE
+                if msg.message == _WM_SYSCOMMAND and (msg.wParam & 0xFFF0) == _SC_MINIMIZE:
+                    return True, 0
+                if msg.message == _WM_WINDOWPOSCHANGING and msg.lParam:
+                    wp = _WINDOWPOS.from_address(int(msg.lParam))
+                    wp.flags &= ~_SWP_HIDEWINDOW
+                    if (wp.flags & _SWP_NOMOVE) == 0 and (wp.x <= -10000 or wp.y <= -10000):
+                        wp.x = 0
+                        wp.y = 0
+                        wp.cx = self.width
+                        wp.cy = self.height
+                elif msg.message == _WM_SIZE and msg.wParam == _SIZE_MINIMIZED:
+                    QTimer.singleShot(0, lambda: self._ensure_desktop_layer(force=True))
+                elif (
+                    msg.message == _WM_WINDOWPOSCHANGED
+                    and not self._edit_mode
+                    and not self._z_order_guard
+                ):
+                    QTimer.singleShot(0, lambda: self._ensure_desktop_layer(force=False))
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
