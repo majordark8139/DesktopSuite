@@ -285,8 +285,15 @@ class TestSharedCairoQtSurface(unittest.TestCase):
                         needed_w + 16,
                         f"Tab {txt!r} chopped at {w}x{h}: btn_w={tab_btn.width()} < needed={needed_w + 16}",
                     )
+                win.btn_tab_wp.click()
+                app.processEvents()
                 self.assertLessEqual(win.content_wp.width(), win.scroll_wp.viewport().width())
+                self.assertLessEqual(win.content_wp.minimumSizeHint().width(), win.scroll_wp.viewport().width())
+
+                win.btn_tab_cv.click()
+                app.processEvents()
                 self.assertLessEqual(win.content_cv.width(), win.scroll_cv.viewport().width())
+                self.assertLessEqual(win.content_cv.minimumSizeHint().width(), win.scroll_cv.viewport().width())
         finally:
             win.close()
             app.processEvents()
