@@ -101,10 +101,10 @@ class WinDesktopCanvasWindow(QWidget):
         self._rate_limiter = get_rate_limiter()
         self._stopping = False
 
-        # 30 FPS smart animation tick (skips repaints when idle & silent)
+        # 25 FPS smart animation tick (smooth bars, skips repaints when idle & silent)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._on_tick)
-        self._timer.start(33)
+        self._timer.start(40)
 
         log.info(
             "WinDesktopCanvasWindow initialised (%dx%d, hwnd=0x%X, theme=%r, positions=%s)",
@@ -222,8 +222,9 @@ class WinDesktopCanvasWindow(QWidget):
         base_vis_h = float(getattr(self.theme, "vis_base_height", getattr(self.theme, "visualizer_base_height", 60.0)))
         vis_w = int(base_vis_w * scale_mult)
         vis_h = int(base_vis_h * scale_mult)
-        # Generous padding handles round line caps and radial themes (e.g. Circular Orbit)
-        pad = int(math.ceil(48.0 * max(1.0, scale_mult)))
+        theme_name = getattr(self.theme, "name", "")
+        base_pad = 48.0 if theme_name == "Circular Orbit" else 12.0
+        pad = int(math.ceil(base_pad * max(1.0, scale_mult)))
         dirty = QRect(
             int(math.floor(pos_vis["x"] - pad)),
             int(math.floor(pos_vis["y"] - pad)),

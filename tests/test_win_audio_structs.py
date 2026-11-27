@@ -217,6 +217,80 @@ class TestSharedCairoQtSurface(unittest.TestCase):
             win.stop()
             app.processEvents()
 
+    @unittest.skipUnless(
+        sys.platform == "win32" and _HAS_NUMPY and _HAS_CAIRO_QT,
+        "Requires win32 + PyQt5 + cairo + numpy",
+    )
+    def test_control_center_ui_unchopped_at_default_and_min_size(self):
+        from src.themes.registry import REGISTRY
+        from src.windows.app import load_app_icon
+        from src.windows.control_center import ControlCenterWindow
+
+        app = QApplication.instance() or QApplication([])
+        icon = load_app_icon()
+
+        class _MemCfg:
+            def __init__(self) -> None:
+                self.data = {
+                    "wallpaper.video_path": "demo.mp4",
+                    "wallpaper.shortcut": "Disabled",
+                    "canvas.active_theme": "Original Cursive",
+                }
+
+            def get(self, key: str, default=None):
+                return self.data.get(key, default)
+
+            def set(self, key: str, val) -> None:
+                self.data[key] = val
+
+            def save(self) -> None:
+                pass
+
+        class _DummyEngine:
+            def is_running(self) -> bool:
+                return False
+
+            def set_volume(self, _v):
+                pass
+
+            def set_speed(self, _s):
+                pass
+
+            def set_mute(self, _m):
+                pass
+
+        class _DummyCtrl:
+            def __init__(self) -> None:
+                self.cfg = _MemCfg()
+                self.registry = REGISTRY
+                self.engine = _DummyEngine()
+                self.app_icon = icon
+                self.canvas = None
+                self.audio = type("_A", (), {"set_intensity": lambda *a: None})()
+
+        win = ControlCenterWindow(_DummyCtrl())
+        try:
+            win.show()
+            app.processEvents()
+            self.assertFalse(win.windowIcon().isNull())
+
+            for w, h in ((win.width(), win.height()), (460, 480)):
+                win.resize(w, h)
+                app.processEvents()
+                for tab_btn in (win.btn_tab_wp, win.btn_tab_cv):
+                    txt = tab_btn.text().replace("&&", "&")
+                    needed_w = tab_btn.fontMetrics().horizontalAdvance(txt)
+                    self.assertGreaterEqual(
+                        tab_btn.width(),
+                        needed_w + 16,
+                        f"Tab {txt!r} chopped at {w}x{h}: btn_w={tab_btn.width()} < needed={needed_w + 16}",
+                    )
+                self.assertLessEqual(win.content_wp.width(), win.scroll_wp.viewport().width())
+                self.assertLessEqual(win.content_cv.width(), win.scroll_cv.viewport().width())
+        finally:
+            win.close()
+            app.processEvents()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -752,26 +752,49 @@ class WinWallpaperEngine:
         mute: bool,
         fit_mode: str,
         fps_limit: str,
+        screen_w: int = 0,
+        screen_h: int = 0,
     ) -> list[str]:
-        if backend == "direct3d":
-            # Direct3D 9Ex + DXVA2-copy: reliable hardware decode on Intel HD 4400 Win7 SP1
-            vo_flags = [
-                "--vo=direct3d",
-                "--hwdec=dxva2-copy",
-            ]
-        else:
-            # D3D11 fallback
+        if backend == "gpu-d3d11":
+            # True zero-copy D3D11VA hardware decode + GPU shader scaling (matches Linux VA-API)
             vo_flags = [
                 "--vo=gpu",
                 "--gpu-context=d3d11",
                 "--d3d11-flip=no",          # Mandatory on Windows 7 DXGI 1.2
                 "--d3d11-sync-interval=1",
-                "--hwdec=dxva2-copy",
+                "--hwdec=d3d11va",
+                "--hwdec-codecs=all",
                 "--profile=fast",
                 "--scale=bilinear",
                 "--cscale=bilinear",
                 "--dscale=bilinear",
+                "--correct-downscaling=no",
+                "--linear-downscaling=no",
                 "--deband=no",
+                "--dither-depth=no",
+            ]
+        elif backend == "gpu-gl-win":
+            # OpenGL + WGL_NV_DX_interop zero-copy DXVA2 hardware decode (universal Win7 Intel fallback)
+            vo_flags = [
+                "--vo=gpu",
+                "--gpu-context=win",
+                "--hwdec=dxva2",
+                "--hwdec-codecs=all",
+                "--profile=fast",
+                "--scale=bilinear",
+                "--cscale=bilinear",
+                "--dscale=bilinear",
+                "--correct-downscaling=no",
+                "--linear-downscaling=no",
+                "--deband=no",
+                "--dither-depth=no",
+            ]
+        else:
+            # Proven Direct3D 9Ex + dxva2-copy safety net
+            vo_flags = [
+                "--vo=direct3d",
+                "--hwdec=dxva2-copy",
+                "--sws-scaler=fast-bilinear",
             ]
 
         cmd = [
@@ -799,6 +822,8 @@ class WinWallpaperEngine:
             f"--log-file={self.log_path}",
             "--msg-level=all=warn,vo=v,hwdec=v",
         ]
+        if screen_w > 0 and screen_h > 0:
+            cmd.append(f"--geometry={screen_w}x{screen_h}+0+0")
         if mute:
             cmd.append("--no-audio")
         if fit_mode == "fill":
@@ -862,7 +887,7 @@ class WinWallpaperEngine:
             workerw_target, rect.right - rect.left, rect.bottom - rect.top, sys_w, sys_h, screen_w, screen_h,
         )
 
-        backends = ["direct3d", "d3d11"]
+        backends = ["gpu-d3d11", "gpu-gl-win", "direct3d"]
 
         for backend in backends:
             unique_id = uuid.uuid4().hex[:8]
@@ -872,7 +897,8 @@ class WinWallpaperEngine:
 
             cmd = self._build_cmd(
                 mpv_bin, mpv_title, video_path, backend,
-                speed, volume, mute, fit_mode, fps_limit
+                speed, volume, mute, fit_mode, fps_limit,
+                screen_w=screen_w, screen_h=screen_h,
             )
             log.info("Spawning mpv backend=%s: %s", backend, cmd)
 
@@ -910,9 +936,51 @@ class WinWallpaperEngine:
 
             if mpv_hwnd and self._proc.poll() is None:
                 try:
-                    # Hide while top-level and strip taskbar button before reparenting into WorkerW #2
+                    # Hide while top-level and strip taskbar button BEFORE VO settle & reparent
                     user32.ShowWindow(mpv_hwnd, SW_HIDE)
                     _delete_taskbar_tab(mpv_hwnd)
+
+                    # For zero-copy --vo=gpu backends, ensure swapchain/GL context & HW decoder
+                    # initialize cleanly in-process before reparenting into WorkerW #2.
+                    if backend.startswith("gpu-"):
+                        vo_ok = False
+                        cur_vo = None
+                        hw_cur = None
+                        vo_ready_at = None
+                        verify_start = time.time()
+                        while time.time() - verify_start < 1.5 and self._proc.poll() is None:
+                            res_vo = self._ipc.send_command(["get_property", "vo-configured"])
+                            res_cvo = self._ipc.send_command(["get_property", "current-vo"])
+                            res_hw = self._ipc.send_command(["get_property", "hwdec-current"])
+                            vo_ok = bool(res_vo and res_vo.get("data"))
+                            cur_vo = res_cvo.get("data") if res_cvo else None
+                            hw_cur = res_hw.get("data") if res_hw else None
+                            if vo_ok:
+                                if vo_ready_at is None:
+                                    vo_ready_at = time.time()
+                                if hw_cur or (time.time() - vo_ready_at >= 0.25):
+                                    break
+                            time.sleep(0.025)
+
+                        log.info(
+                            "Pre-reparent GPU verify (%s in %.2fs): vo-configured=%s current-vo=%r hwdec-current=%r",
+                            backend, time.time() - verify_start, vo_ok, cur_vo, hw_cur,
+                        )
+                        if not vo_ok or not hw_cur:
+                            log.warning(
+                                "Backend %s did not activate zero-copy GPU hwdec (vo=%s, hwdec=%r); trying next backend",
+                                backend, vo_ok, hw_cur,
+                            )
+                            try:
+                                self._ipc.send_command(["quit"])
+                                self._proc.wait(timeout=0.3)
+                            except Exception:
+                                try:
+                                    self._proc.kill()
+                                except Exception:
+                                    pass
+                            self._proc = None
+                            continue
 
                     # 1. Adjust window style: strip popup/caption/thickframe/visible until child-reparented
                     old_style = user32.GetWindowLongPtrW(mpv_hwnd, GWL_STYLE)

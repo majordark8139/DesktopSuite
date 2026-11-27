@@ -18,8 +18,8 @@ from typing import Any, Optional
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QGroupBox, QPushButton, QLabel, QSlider, QCheckBox,
-    QComboBox, QFileDialog, QColorDialog, QScrollArea, QFrame, QSizePolicy
+    QStackedWidget, QButtonGroup, QGroupBox, QPushButton, QLabel, QSlider,
+    QCheckBox, QComboBox, QFileDialog, QColorDialog, QScrollArea, QFrame, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QEvent, QTimer
 from PyQt5.QtGui import QColor, QFont, QIcon, QPixmap, QPalette
@@ -80,36 +80,36 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
     background: none;
 }
-QTabWidget::pane {
+QFrame#TabContainer {
     border: 1px solid #313244;
     border-radius: 8px;
     background-color: #1e1e2e;
-    padding-top: 2px;
 }
-QTabBar::tab {
+QPushButton[tabBtn="true"] {
     background-color: #181825;
     color: #a6adc8;
-    padding: 9px 14px;
+    padding: 9px 12px;
     font-size: 13px;
     font-weight: bold;
+    border: none;
+    border-bottom: 2px solid #313244;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
-    margin-right: 4px;
 }
-QTabBar::tab:selected {
-    background-color: #252839;
-    color: #89b4fa;
-    border-bottom: 2px solid #89b4fa;
-}
-QTabBar::tab:hover:!selected {
+QPushButton[tabBtn="true"]:hover:!checked {
     background-color: #1f2232;
     color: #cdd6f4;
+}
+QPushButton[tabBtn="true"]:checked {
+    background-color: #252839;
+    color: #89b4fa;
+    border-bottom: 3px solid #89b4fa;
 }
 QGroupBox {
     background-color: #252839;
     border-radius: 8px;
-    margin-top: 16px;
-    padding: 16px 12px 12px 12px;
+    margin-top: 12px;
+    padding: 14px 10px 10px 10px;
     font-weight: bold;
     color: #89b4fa;
     border: 1px solid #363a4f;
@@ -263,56 +263,94 @@ class ControlCenterWindow(QMainWindow):
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(0)
 
-        tabs = QTabWidget()
-        tabs.setUsesScrollButtons(False)
-        tabs.setElideMode(Qt.ElideNone)
-        tabs.tabBar().setExpanding(True)
-        main_layout.addWidget(tabs)
+        # Crisp segmented header bar (prevents Win7 QTabBar left/right text clipping)
+        tab_header = QHBoxLayout()
+        tab_header.setContentsMargins(0, 0, 0, 0)
+        tab_header.setSpacing(4)
 
-        # Tab 1: Live Wallpaper
+        self.btn_tab_wp = QPushButton("Live Wallpaper")
+        self.btn_tab_wp.setProperty("tabBtn", "true")
+        self.btn_tab_wp.setCheckable(True)
+        self.btn_tab_wp.setChecked(True)
+        self.btn_tab_wp.setMinimumWidth(0)
+        self.btn_tab_wp.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self.btn_tab_cv = QPushButton("Clock && Canvas Studio")
+        self.btn_tab_cv.setProperty("tabBtn", "true")
+        self.btn_tab_cv.setCheckable(True)
+        self.btn_tab_cv.setMinimumWidth(0)
+        self.btn_tab_cv.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self._tab_group = QButtonGroup(self)
+        self._tab_group.setExclusive(True)
+        self._tab_group.addButton(self.btn_tab_wp, 0)
+        self._tab_group.addButton(self.btn_tab_cv, 1)
+
+        tab_header.addWidget(self.btn_tab_wp, 1)
+        tab_header.addWidget(self.btn_tab_cv, 1)
+        main_layout.addLayout(tab_header)
+
+        tab_container = QFrame()
+        tab_container.setObjectName("TabContainer")
+        container_layout = QVBoxLayout(tab_container)
+        container_layout.setContentsMargins(2, 4, 2, 4)
+        container_layout.setSpacing(0)
+
+        self.stack = QStackedWidget()
+        container_layout.addWidget(self.stack)
+        main_layout.addWidget(tab_container, 1)
+
+        # Page 0: Live Wallpaper
         tab_wp = QWidget()
         tab_wp.setObjectName("tab_wp")
-        scroll_wp = QScrollArea()
-        scroll_wp.setObjectName("scroll_wp")
-        scroll_wp.setFrameShape(QFrame.NoFrame)
-        scroll_wp.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_wp.setWidgetResizable(True)
-        scroll_wp.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
-        content_wp = QWidget()
-        content_wp.setObjectName("content_wp")
-        layout_wp = QVBoxLayout(content_wp)
-        layout_wp.setSpacing(10)
-        layout_wp.setContentsMargins(8, 8, 10, 12)
+        self.scroll_wp = QScrollArea()
+        self.scroll_wp.setObjectName("scroll_wp")
+        self.scroll_wp.setFrameShape(QFrame.NoFrame)
+        self.scroll_wp.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_wp.setWidgetResizable(True)
+        self.scroll_wp.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
+        self.content_wp = QWidget()
+        self.content_wp.setObjectName("content_wp")
+        layout_wp = QVBoxLayout(self.content_wp)
+        layout_wp.setSpacing(8)
+        layout_wp.setContentsMargins(8, 4, 10, 10)
         self._build_wallpaper_tab(layout_wp)
-        scroll_wp.setWidget(content_wp)
+        self.scroll_wp.setWidget(self.content_wp)
         layout_tab_wp = QVBoxLayout(tab_wp)
         layout_tab_wp.setContentsMargins(0, 0, 0, 0)
-        layout_tab_wp.addWidget(scroll_wp)
-        tabs.addTab(tab_wp, "Live Wallpaper")
+        layout_tab_wp.addWidget(self.scroll_wp)
+        self.stack.addWidget(tab_wp)
 
-        # Tab 2: Clock & Canvas Studio
+        # Page 1: Clock & Canvas Studio
         tab_cv = QWidget()
         tab_cv.setObjectName("tab_cv")
-        scroll_cv = QScrollArea()
-        scroll_cv.setObjectName("scroll_cv")
-        scroll_cv.setFrameShape(QFrame.NoFrame)
-        scroll_cv.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_cv.setWidgetResizable(True)
-        scroll_cv.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
-        content_cv = QWidget()
-        content_cv.setObjectName("content_cv")
-        layout_cv = QVBoxLayout(content_cv)
-        layout_cv.setSpacing(10)
-        layout_cv.setContentsMargins(8, 8, 10, 12)
+        self.scroll_cv = QScrollArea()
+        self.scroll_cv.setObjectName("scroll_cv")
+        self.scroll_cv.setFrameShape(QFrame.NoFrame)
+        self.scroll_cv.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll_cv.setWidgetResizable(True)
+        self.scroll_cv.viewport().setStyleSheet("background-color: #1e1e2e; border: none;")
+        self.content_cv = QWidget()
+        self.content_cv.setObjectName("content_cv")
+        layout_cv = QVBoxLayout(self.content_cv)
+        layout_cv.setSpacing(8)
+        layout_cv.setContentsMargins(8, 4, 10, 10)
         self._build_canvas_tab(layout_cv)
-        scroll_cv.setWidget(content_cv)
+        self.scroll_cv.setWidget(self.content_cv)
         layout_tab_cv = QVBoxLayout(tab_cv)
         layout_tab_cv.setContentsMargins(0, 0, 0, 0)
-        layout_tab_cv.addWidget(scroll_cv)
-        tabs.addTab(tab_cv, "Clock && Canvas Studio")
-        tabs.currentChanged.connect(lambda idx: log.info("UI Tab switched -> %r (index=%d)", tabs.tabText(idx), idx))
+        layout_tab_cv.addWidget(self.scroll_cv)
+        self.stack.addWidget(tab_cv)
+
+        def _on_tab_selected(idx: int) -> None:
+            self.stack.setCurrentIndex(idx)
+            label = "Live Wallpaper" if idx == 0 else "Clock & Canvas Studio"
+            log.info("UI Tab switched -> %r (index=%d)", label, idx)
+
+        self.btn_tab_wp.clicked.connect(lambda: _on_tab_selected(0))
+        self.btn_tab_cv.clicked.connect(lambda: _on_tab_selected(1))
 
         self._building = False
         self._update_engine_status()
